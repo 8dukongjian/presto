@@ -24,7 +24,7 @@
 #include "presto_cpp/main/types/PrestoTaskId.h"
 // TypeSignatureTypeConverter.h must be included after presto_protocol.h
 // because it changes the macro EOF in some way (maybe deleting it?) which
-// is used in third_party/json/json.hpp
+// is used in external/json/nlohmann/json.hpp
 //
 #include "presto_cpp/main/types/PrestoToVeloxExpr.h"
 
@@ -197,7 +197,7 @@ class VeloxQueryPlanConverterBase {
           statisticsAggregation,
       velox::core::AggregationNode::Step step,
       const protocol::PlanNodeId& id,
-      const std::shared_ptr<protocol::PlanNode>& source,
+      const velox::core::PlanNodePtr& sourceVeloxPlan,
       const std::shared_ptr<protocol::TableWriteInfo>& tableWriteInfo,
       const protocol::TaskId& taskId);
 

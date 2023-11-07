@@ -429,8 +429,7 @@ std::shared_ptr<const ConstantTypedExpr> VeloxExprConverter::toVeloxExpr(
       auto valueVector =
           protocol::readBlock(type, pexpr->valueBlock.data, pool_);
       return std::make_shared<ConstantTypedExpr>(
-          std::make_shared<velox::ConstantVector<velox::ComplexType>>(
-              pool_, 1, 0, valueVector));
+          velox::BaseVector::wrapInConstant(1, 0, valueVector));
     }
     default: {
       const auto value = getConstantValue(type, pexpr->valueBlock);
@@ -537,6 +536,39 @@ TypedExprPtr convertBindExpr(const std::vector<TypedExprPtr>& args) {
       newSignature, lambda->body()->rewriteInputNames(mapping));
 }
 
+velox::ArrayVectorPtr wrapInArray(const velox::VectorPtr& elements) {
+  auto* pool = elements->pool();
+  auto size = elements->size();
+  auto offsets = velox::allocateOffsets(size, pool);
+  auto sizes = velox::allocateSizes(size, pool);
+
+  auto rawSizes = sizes->asMutable<velox::vector_size_t>();
+  rawSizes[0] = size;
+
+  return std::make_shared<velox::ArrayVector>(
+      pool, ARRAY(elements->type()), nullptr, 1, offsets, sizes, elements);
+}
+
+velox::ArrayVectorPtr toArrayOfComplexTypeVector(
+    const velox::TypePtr& elementType,
+    std::vector<TypedExprPtr>::const_iterator begin,
+    std::vector<TypedExprPtr>::const_iterator end,
+    velox::memory::MemoryPool* pool) {
+  const auto size = end - begin;
+  auto elements = velox::BaseVector::create(elementType, size, pool);
+
+  for (auto i = 0; i < size; ++i) {
+    auto constant =
+        dynamic_cast<const ConstantTypedExpr*>((*(begin + i)).get());
+    if (constant == nullptr) {
+      VELOX_UNSUPPORTED("IN predicate supports only constant list of values");
+    }
+    elements->copy(constant->valueVector().get(), i, 0, 1);
+  }
+
+  return wrapInArray(elements);
+}
+
 template <TypeKind KIND>
 velox::ArrayVectorPtr toArrayVector(
     const velox::TypePtr& elementType,
@@ -567,14 +599,7 @@ velox::ArrayVectorPtr toArrayVector(
     }
   }
 
-  auto offsets = velox::allocateOffsets(size, pool);
-  auto sizes = velox::allocateSizes(size, pool);
-
-  auto rawSizes = sizes->asMutable<velox::vector_size_t>();
-  rawSizes[0] = size;
-
-  return std::make_shared<velox::ArrayVector>(
-      pool, ARRAY(elementType), nullptr, 1, offsets, sizes, elements);
+  return wrapInArray(elements);
 }
 
 TypedExprPtr convertInExpr(
@@ -583,13 +608,28 @@ TypedExprPtr convertInExpr(
   auto numArgs = args.size();
   VELOX_USER_CHECK_GE(numArgs, 2);
 
-  auto arrayVector = VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
-      toArrayVector,
-      args[0]->type()->kind(),
-      args[0]->type(),
-      args.begin() + 1,
-      args.end(),
-      pool);
+  const auto typeKind = args[0]->type()->kind();
+
+  velox::ArrayVectorPtr arrayVector;
+  switch (typeKind) {
+    case velox::TypeKind::ARRAY:
+      [[fallthrough]];
+    case velox::TypeKind::MAP:
+      [[fallthrough]];
+    case velox::TypeKind::ROW:
+      arrayVector = toArrayOfComplexTypeVector(
+          args[0]->type(), args.begin() + 1, args.end(), pool);
+      break;
+    default:
+      arrayVector = VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+          toArrayVector,
+          typeKind,
+          args[0]->type(),
+          args.begin() + 1,
+          args.end(),
+          pool);
+  }
+
   auto constantVector =
       std::make_shared<velox::ConstantVector<velox::ComplexType>>(
           pool, 1, 0, arrayVector);
@@ -619,17 +659,8 @@ TypedExprPtr convertDereferenceExpr(
   auto childIndex = childIndexExpr->value().value<int32_t>();
 
   VELOX_USER_CHECK_LT(childIndex, inputType.size());
-  auto childName = inputType.names()[childIndex];
 
-  VELOX_USER_CHECK_EQ(
-      childIndex,
-      inputType.getChildIdx(childName),
-      "Cannot map field index to name in dereference expression: {}. "
-      "Input struct may have duplicate or empty field names: {}.",
-      childIndex,
-      inputType.toString())
-
-  return std::make_shared<FieldAccessTypedExpr>(returnType, input, childName);
+  return std::make_shared<DereferenceTypedExpr>(returnType, input, childIndex);
 }
 } // namespace
 
@@ -683,7 +714,13 @@ std::shared_ptr<const LambdaTypedExpr> VeloxExprConverter::toVeloxExpr(
     argumentTypes.emplace_back(parseTypeSignature(typeName));
   }
 
-  auto signature = ROW(std::move(lambda->arguments), std::move(argumentTypes));
+  // TODO(spershin): In some cases we can visit this method with the same lambda
+  // more than once and having zero arguments and non-zero types would trigger a
+  // check down the stack.
+  // So, we make sure we don't mutate lambda here, while we investigate how that
+  // can happen and validate such behavior or fix a bug.
+  auto argCopy = lambda->arguments;
+  auto signature = ROW(std::move(argCopy), std::move(argumentTypes));
   return std::make_shared<LambdaTypedExpr>(
       signature, toVeloxExpr(lambda->body));
 }

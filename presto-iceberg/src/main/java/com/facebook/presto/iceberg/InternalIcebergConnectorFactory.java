@@ -23,7 +23,6 @@ import com.facebook.presto.hive.NodeVersion;
 import com.facebook.presto.hive.RebindSafeMBeanServer;
 import com.facebook.presto.hive.authentication.HiveAuthenticationModule;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
-import com.facebook.presto.hive.metastore.HiveMetastoreModule;
 import com.facebook.presto.hive.s3.HiveS3Module;
 import com.facebook.presto.iceberg.optimizer.IcebergParquetDereferencePushDown;
 import com.facebook.presto.iceberg.optimizer.IcebergPlanOptimizer;
@@ -43,6 +42,7 @@ import com.facebook.presto.spi.connector.classloader.ClassLoaderSafeConnectorPag
 import com.facebook.presto.spi.connector.classloader.ClassLoaderSafeConnectorSplitManager;
 import com.facebook.presto.spi.connector.classloader.ClassLoaderSafeNodePartitioningProvider;
 import com.facebook.presto.spi.function.StandardFunctionResolution;
+import com.facebook.presto.spi.plan.FilterStatsCalculatorService;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.relation.RowExpressionService;
 import com.google.common.collect.ImmutableSet;
@@ -58,6 +58,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.airlift.configuration.ConditionalModule.installModuleIf;
+
 public final class InternalIcebergConnectorFactory
 {
     private InternalIcebergConnectorFactory() {}
@@ -70,11 +72,14 @@ public final class InternalIcebergConnectorFactory
                     new EventModule(),
                     new MBeanModule(),
                     new JsonModule(),
-                    new IcebergModule(catalogName),
-                    new IcebergMetastoreModule(),
+                    new IcebergCommonModule(catalogName),
+                    installModuleIf(
+                            IcebergConfig.class,
+                            conf -> conf.getCatalogType().equals(CatalogType.HIVE),
+                            new IcebergHiveModule(catalogName, metastore),
+                            new IcebergNativeModule()),
                     new HiveS3Module(catalogName),
                     new HiveAuthenticationModule(),
-                    new HiveMetastoreModule(catalogName, metastore),
                     new CachingModule(),
                     binder -> {
                         MBeanServer platformMBeanServer = ManagementFactory.getPlatformMBeanServer();
@@ -85,6 +90,7 @@ public final class InternalIcebergConnectorFactory
                         binder.bind(PageIndexerFactory.class).toInstance(context.getPageIndexerFactory());
                         binder.bind(StandardFunctionResolution.class).toInstance(context.getStandardFunctionResolution());
                         binder.bind(RowExpressionService.class).toInstance(context.getRowExpressionService());
+                        binder.bind(FilterStatsCalculatorService.class).toInstance(context.getFilterStatsCalculatorService());
                     });
 
             Injector injector = app
@@ -117,6 +123,7 @@ public final class InternalIcebergConnectorFactory
                     icebergSessionProperties.getSessionProperties(),
                     IcebergSchemaProperties.SCHEMA_PROPERTIES,
                     icebergTableProperties.getTableProperties(),
+                    icebergTableProperties.getColumnProperties(),
                     new AllowAllAccessControl(),
                     procedures,
                     ImmutableSet.of(planOptimizer, parquetDereferencePushDown));

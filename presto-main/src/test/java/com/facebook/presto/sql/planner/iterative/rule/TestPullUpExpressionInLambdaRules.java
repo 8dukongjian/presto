@@ -23,9 +23,11 @@ import org.testng.annotations.Test;
 
 import java.lang.invoke.MethodHandle;
 
+import static com.facebook.presto.SystemSessionProperties.PULL_EXPRESSION_FROM_LAMBDA_ENABLED;
 import static com.facebook.presto.common.block.MethodHandleUtil.compose;
 import static com.facebook.presto.common.block.MethodHandleUtil.nativeValueGetter;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.expression;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.filter;
@@ -45,6 +47,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testProjection()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -63,6 +66,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testFilter()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).filterNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -83,6 +87,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testNonDeterministicProjection()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -96,6 +101,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testNonDeterministicFilter()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).filterNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -109,6 +115,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testNoValidProjection()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -123,6 +130,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testNoValidFilter()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).filterNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("idmap", new MapType(BIGINT, BIGINT, KEY_BLOCK_EQUALS, KEY_BLOCK_HASH_CODE));
@@ -136,6 +144,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testNestedLambdaInProjection()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("expr", new ArrayType(new ArrayType(BIGINT)));
@@ -158,6 +167,7 @@ public class TestPullUpExpressionInLambdaRules
     public void testInvalidNestedLambdaInProjection()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("expr", new ArrayType(new ArrayType(BIGINT)));
@@ -173,12 +183,45 @@ public class TestPullUpExpressionInLambdaRules
     public void testSkipTryFunction()
     {
         tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
                 .on(p ->
                 {
                     p.variable("x");
                     return p.project(
                             Assignments.builder().put(p.variable("expr", VARCHAR), p.rowExpression("JSON_FORMAT(CAST(TRY(MAP(ARRAY[NULL], ARRAY[x])) AS JSON))")).build(),
                             p.values(p.variable("x")));
+                }).doesNotFire();
+    }
+
+    @Test
+    public void testSwitchWhenExpression()
+    {
+        tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
+                .on(p ->
+                {
+                    p.variable("arr", new ArrayType(VARCHAR));
+                    p.variable("arr2", new ArrayType(VARCHAR));
+                    return p.project(
+                            Assignments.builder().put(p.variable("expr", VARCHAR), p.rowExpression(
+                                    "transform(arr, x -> concat(case when arr2 is null then '*' when contains(arr2, x) then '+' else ' ' end, x))")).build(),
+                            p.values(p.variable("arr", new ArrayType(VARCHAR)), p.variable("arr2", new ArrayType(VARCHAR))));
+                }).doesNotFire();
+    }
+
+    @Test
+    public void testConditionalExpression()
+    {
+        tester().assertThat(new PullUpExpressionInLambdaRules(getFunctionManager()).projectNodeRule())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
+                .on(p ->
+                {
+                    p.variable("col1", new ArrayType(BOOLEAN));
+                    p.variable("col2", new ArrayType(BIGINT));
+                    return p.project(
+                            Assignments.builder().put(p.variable("expr", VARCHAR), p.rowExpression(
+                                    "transform(col1, x -> if(x, col2[2], 0))")).build(),
+                            p.values(p.variable("col1", new ArrayType(BOOLEAN)), p.variable("col2", new ArrayType(BIGINT))));
                 }).doesNotFire();
     }
 }

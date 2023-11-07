@@ -53,6 +53,7 @@ import java.util.stream.IntStream;
 import static com.facebook.presto.SystemSessionProperties.ADD_PARTIAL_NODE_FOR_ROW_NUMBER_WITH_LIMIT;
 import static com.facebook.presto.SystemSessionProperties.ENABLE_INTERMEDIATE_AGGREGATIONS;
 import static com.facebook.presto.SystemSessionProperties.FIELD_NAMES_IN_JSON_CAST_ENABLED;
+import static com.facebook.presto.SystemSessionProperties.HASH_PARTITION_COUNT;
 import static com.facebook.presto.SystemSessionProperties.KEY_BASED_SAMPLING_ENABLED;
 import static com.facebook.presto.SystemSessionProperties.KEY_BASED_SAMPLING_FUNCTION;
 import static com.facebook.presto.SystemSessionProperties.KEY_BASED_SAMPLING_PERCENTAGE;
@@ -64,13 +65,17 @@ import static com.facebook.presto.SystemSessionProperties.OPTIMIZE_CASE_EXPRESSI
 import static com.facebook.presto.SystemSessionProperties.PREFILTER_FOR_GROUPBY_LIMIT;
 import static com.facebook.presto.SystemSessionProperties.PREFILTER_FOR_GROUPBY_LIMIT_TIMEOUT_MS;
 import static com.facebook.presto.SystemSessionProperties.PRE_PROCESS_METADATA_CALLS;
+import static com.facebook.presto.SystemSessionProperties.PULL_EXPRESSION_FROM_LAMBDA_ENABLED;
 import static com.facebook.presto.SystemSessionProperties.PUSH_DOWN_FILTER_EXPRESSION_EVALUATION_THROUGH_CROSS_JOIN;
 import static com.facebook.presto.SystemSessionProperties.PUSH_REMOTE_EXCHANGE_THROUGH_GROUP_ID;
 import static com.facebook.presto.SystemSessionProperties.QUICK_DISTINCT_LIMIT_ENABLED;
 import static com.facebook.presto.SystemSessionProperties.RANDOMIZE_OUTER_JOIN_NULL_KEY;
 import static com.facebook.presto.SystemSessionProperties.RANDOMIZE_OUTER_JOIN_NULL_KEY_STRATEGY;
+import static com.facebook.presto.SystemSessionProperties.REMOVE_REDUNDANT_CAST_TO_VARCHAR_IN_JOIN;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_CASE_TO_MAP_ENABLED;
+import static com.facebook.presto.SystemSessionProperties.REWRITE_CONSTANT_ARRAY_CONTAINS_TO_IN_EXPRESSION;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_CROSS_JOIN_ARRAY_CONTAINS_TO_INNER_JOIN;
+import static com.facebook.presto.SystemSessionProperties.REWRITE_CROSS_JOIN_ARRAY_NOT_CONTAINS_TO_ANTI_JOIN;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_CROSS_JOIN_OR_TO_INNER_JOIN;
 import static com.facebook.presto.SystemSessionProperties.REWRITE_LEFT_JOIN_NULL_FILTER_TO_SEMI_JOIN;
 import static com.facebook.presto.SystemSessionProperties.SIMPLIFY_PLAN_WITH_EMPTY_INPUT;
@@ -2562,6 +2567,14 @@ public abstract class AbstractTestQueries
         String query = "EXPLAIN ANALYZE SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN " + query);
         assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan("EXPLAIN ", query, LOGICAL));
+    }
+
+    @Test
+    public void testExplainValidateOfExplain()
+    {
+        String query = "EXPLAIN SELECT 1";
+        MaterializedResult result = computeActual("EXPLAIN (TYPE VALIDATE) " + query);
+        assertEquals(result.getOnlyValue(), true);
     }
 
     @Test
@@ -6273,6 +6286,13 @@ public abstract class AbstractTestQueries
                 .setSystemProperty(RANDOMIZE_OUTER_JOIN_NULL_KEY_STRATEGY, "key_from_outer_join")
                 .build();
         assertQuery(enableKeyFromOuterJoin, multipleJoin, getSession(), multipleJoin);
+
+        Session enableRandomizeFourPartition = Session.builder(getSession())
+                .setSystemProperty(RANDOMIZE_OUTER_JOIN_NULL_KEY, "true")
+                .setSystemProperty(HASH_PARTITION_COUNT, "1")
+                .build();
+        String varcharJoinKey = "select t.k, t2.k, t2.v from (values 'r0', 'r1', 'r2', 'r3') t(k) left join (values (null, 1), (null, 2), (null, 3), (null, 4)) t2(k, v) on t.k = t2.k";
+        assertQuery(enableRandomizeFourPartition, varcharJoinKey, "values ('r0', null, null), ('r1', null, null), ('r2', null, null), ('r3', null, null)");
     }
 
     @Test
@@ -6905,6 +6925,66 @@ public abstract class AbstractTestQueries
         sql = "with t1 as (select * from (values (array[cast(1 as integer), 2, 3], 10), (array[4, 5, 6], 11)) t(arr, k)), t2 as (select * from (values (cast(1 as bigint), 'a'), (4, 'b')) t(k, v)) " +
                 "select t1.k, t2.k, t2.v from t1 join t2 on contains(t1.arr, t2.k)";
         assertQuery(enableOptimization, sql, "values (11, 4, 'b'), (10, 1, 'a')");
+
+        sql = "with t1 as (select * from (values (1, 'JAPAN'), (2, 'invalid_nation')) t(k, nation)) " +
+                "select t1.k, t1.nation from t1 where contains((select array_agg(name) from nation), t1.nation)";
+        assertQuery(enableOptimization, sql, "values (1, 'JAPAN')");
+
+        sql = "with t1 as (select * from (values (1, 'JAPAN'), (2, 'invalid_nation')) t(k, nation)) " +
+                "select t1.k, t1.nation from t1 where contains(transform((select array_agg(name) from nation), (x) ->lower(x)), lower(t1.nation))";
+        assertQuery(enableOptimization, sql, "values (1, 'JAPAN')");
+    }
+
+    @Test
+    public void testCrossJoinWithArrayNotContainsCondition()
+    {
+        Session enableOptimization = Session.builder(getSession())
+                .setSystemProperty(PUSH_DOWN_FILTER_EXPRESSION_EVALUATION_THROUGH_CROSS_JOIN, "REWRITTEN_TO_INNER_JOIN")
+                .setSystemProperty(REWRITE_CROSS_JOIN_ARRAY_NOT_CONTAINS_TO_ANTI_JOIN, "true")
+                .build();
+
+        String sql = "with t1 as (select * from (values (array[1, 2, 3])) t(arr)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t2.k, t2.v from t2 where not contains((select t1.arr from t1), t2.k)";
+        assertQuery(enableOptimization, sql, "values (4, 'b')");
+
+        sql = "with t1 as (select * from (values (array[1, 2, 3, 3, null])) t(arr)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t2.k, t2.v from t2 where not contains((select t1.arr from t1), t2.k)";
+        assertQuery(enableOptimization, sql, "values (4, 'b')");
+
+        sql = "with t1 as (select * from (values (1, 'JAPAN'), (2, 'invalid_nation')) t(k, nation)) " +
+                "select t1.k, t1.nation from t1 where not contains((select array_agg(name) from nation), t1.nation)";
+        assertQuery(enableOptimization, sql, "values (2, 'invalid_nation')");
+
+        // array is an expression that needs to be pushed down
+        sql = "with t1 as (select * from (values (1, 'JAPAN'), (2, 'invalid_nation')) t(k, nation)) " +
+                "select t1.k, t1.nation from t1 where not contains(array_distinct((select array_agg(name) from nation)), t1.nation)";
+        assertQuery(enableOptimization, sql, "values (2, 'invalid_nation')");
+
+        // check not applicable cases for optimization
+
+        // optimization doesn't apply when there are additional columns on array side
+        sql = "with t1 as (select * from (values (array[1, 1, 3], 10)) t(arr, k)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t1.k, t2.k, t2.v from t1 join t2 on not contains(t1.arr, t2.k)";
+        assertQuery(enableOptimization, sql, "values (10, 4, 'b')");
+
+        // optimization doesn't apply for multi-row array tables
+        sql = "with t1 as (select * from (values (array[1, 2, 3]), (array[4, 5, 6])) t(arr)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t1.arr, t2.k, t2.v from t1 join t2 on not contains(t1.arr, t2.k)";
+        assertQuery(enableOptimization, sql, "values (array[1,2,3], 4, 'b'), (array[4,5,6], 1, 'a')");
+
+        // we currently don't support the optimization for cases that didn't come from a subquery
+        sql = "with t1 as (select * from (values (array[1, 2, 3])) t(arr)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t2.k, t2.v from t1 join t2 on not contains(t1.arr, t2.k)";
+        assertQuery(enableOptimization, sql, "values (4, 'b')");
+
+        sql = "with t1 as (select * from (values (array[1, 2, 3])) t(arr)), t2 as (select * from (values (1, 'a'), (4, 'b')) t(k, v)) " +
+                "select t1.arr, t2.k, t2.v from t1 join t2 on not contains(t1.arr, t2.k)";
+        assertQuery(enableOptimization, sql, "values (array[1,2,3], 4, 'b')");
+
+        // transform function considered non-deterministic and doesn't get pushed down
+        sql = "with t1 as (select * from (values (1, 'JAPAN'), (2, 'invalid_nation')) t(k, nation)) " +
+                "select t1.k, t1.nation from t1 where not contains(transform((select array_agg(name) from nation), (x) ->lower(x)), lower(t1.nation))";
+        assertQuery(enableOptimization, sql, "values (2, 'invalid_nation')");
     }
 
     @Test
@@ -7078,13 +7158,55 @@ public abstract class AbstractTestQueries
     @Test
     public void testLambdaExpressionPullUp()
     {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(PULL_EXPRESSION_FROM_LAMBDA_ENABLED, "true")
+                .build();
         // H2 runner does not have map, run with the same query runner for this query
-        assertQueryWithSameQueryRunner("select map_filter(idmap, (k, v) -> array_position(array_sort(map_keys(idmap)), k) <= 3) from (values map(array[1, 4, 2, 8, 0], " +
+        assertQueryWithSameQueryRunner(session, "select map_filter(idmap, (k, v) -> array_position(array_sort(map_keys(idmap)), k) <= 3) from (values map(array[1, 4, 2, 8, 0], " +
                 "array['a', 'a', 'a', 'a', 'a'])) t(idmap)", "values map(array[0, 1, 2], array['a', 'a', 'a'])");
-        assertQuery("select * from (values (1, 1, array[1, 2, 3]), (1, 2, array[0, 1, 4]), (2, 2, array[1, 2, 3]), (5, 0, array[1, 2, 3]))t(id1, id2, array) where any_match(array, x -> x > id1 + id2)",
+        assertQuery(session, "select * from (values (1, 1, array[1, 2, 3]), (1, 2, array[0, 1, 4]), (2, 2, array[1, 2, 3]), (5, 0, array[1, 2, 3]))t(id1, id2, array) where any_match(array, x -> x > id1 + id2)",
                 "values (1, 1, array[1, 2, 3]), (1, 2, array[0, 1, 4])");
-        assertQueryWithSameQueryRunner("select transform(arr1, x->transform(arr2, y->slice(arr2, 1, 3))) from (values (array[1, 2], array[1,2,3,4,5]), (array[1,2,3], array[0,1,2,3])) t(arr1, arr2)",
+        assertQueryWithSameQueryRunner(session, "select transform(arr1, x->transform(arr2, y->slice(arr2, 1, 3))) from (values (array[1, 2], array[1,2,3,4,5]), (array[1,2,3], array[0,1,2,3])) t(arr1, arr2)",
                 "values array[array[array[1, 2, 3], array[1, 2, 3], array[1, 2, 3], array[1, 2, 3], array[1, 2, 3]], array[array[1, 2, 3], array[1, 2, 3], array[1, 2, 3], array[1, 2, 3], array[1, 2, 3]]], " +
                         "array[array[array[0, 1, 2], array[0, 1, 2], array[0, 1, 2], array[0, 1, 2]], array[array[0, 1, 2], array[0, 1, 2], array[0, 1, 2], array[0, 1, 2]], array[array[0, 1, 2], array[0, 1, 2], array[0, 1, 2], array[0, 1, 2]]]");
+        assertQuery(session, "select transform(col1, x -> concat(case when col2 is null then '*' when contains(col2, x) then '+' else ' ' end, x)) from (values (array['1'], array['1'])) t(col1, col2)",
+                "values ('+1')");
+        assertQuery(session, "select transform(col1, x -> if(x, col2[2], 0)) from (values (array[false], array[0])) t(col1, col2)", "values array[0]");
+        assertQuery(session, "select transform(arr1, x -> arr2[2]) from (values (array[], array[0])) t(arr1, arr2)", "values array[]");
+    }
+
+    @Test
+    public void testRewriteContainsToIn()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(REWRITE_CONSTANT_ARRAY_CONTAINS_TO_IN_EXPRESSION, "true")
+                .build();
+        assertQuery(session, "select k from (values 1, 2, 3, 4, 5) t(k) where contains(array[1, 3, 4], k)", "values 1, 3, 4");
+        assertQuery(session, "select filter(arr, x -> contains(array[1,5], x)) from (values array[1, 2, 3, 4], array[1,3,5,7]) t(arr)", "values array[1], array[1, 5]");
+        assertQuery(session, "select x, contains(array[null], x) from (values 1, 2, 3, 4, null) t(x)", "values (1, null), (2, null), (3, null), (4, null), (null, null)");
+        assertQuery(session, "select x, contains(array[null, 1], x) from (values 1, 2, 3, 4, null) t(x)", "values (1, true), (2, null), (3, null), (4, null), (null, null)");
+        assertQuery(session, "select x, contains(array[], x) from (values 1, 2, 3, 4, null) t(x)", "values (1, false), (2, false), (3, false), (4, false), (null, null)");
+        assertQuery(session, "select x, contains(cast(null as array<bigint>), x) from (values 1, 2, 3, 4, null) t(x)", "values (1, null), (2, null), (3, null), (4, null), (null, null)");
+    }
+
+    @Test
+    public void testRemoveRedundantCastToVarcharInJoinClause()
+    {
+        Session session = Session.builder(getSession())
+                .setSystemProperty(REMOVE_REDUNDANT_CAST_TO_VARCHAR_IN_JOIN, "true")
+                .build();
+        // Trigger optimization
+        assertQuery(session, "select * from orders o join customer c on cast(o.custkey as varchar) = cast(c.custkey as varchar)");
+        assertQuery(session, "select o.orderkey, c.name from orders o join customer c on cast(o.custkey as varchar) = cast(c.custkey as varchar)");
+        assertQuery(session, "select *, cast(o.custkey as varchar), cast(c.custkey as varchar) from orders o join customer c on cast(o.custkey as varchar) = cast(c.custkey as varchar)");
+        assertQuery(session, "select r.custkey, r.orderkey, r.name, n.nationkey from (select o.custkey, o.orderkey, c.name from orders o join customer c on cast(o.custkey as varchar) = cast(c.custkey as varchar)) r, nation n");
+        // Do not trigger optimization
+        assertQuery(session, "select * from customer c join orders o on cast(acctbal as varchar) = cast(totalprice as varchar)");
+    }
+
+    @Test
+    public void testMapBlockBug()
+    {
+        assertQueryFails(" VALUES(MAP_AGG(12345,123))", ".*Cannot evaluate non-scalar function.*");
     }
 }

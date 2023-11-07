@@ -31,12 +31,16 @@ std::optional<std::string> getBroadcastInfo(folly::Uri& uri) {
 }
 } // namespace
 
-void BroadcastExchangeSource::request() {
+folly::SemiFuture<BroadcastExchangeSource::Response>
+BroadcastExchangeSource::request(
+    uint32_t /*maxBytes*/,
+    uint32_t /*maxWaitSeconds*/) {
   std::vector<velox::ContinuePromise> promises;
+  int64_t totalBytes = 0;
   {
     std::lock_guard<std::mutex> l(queue_->mutex());
     if (atEnd_) {
-      return;
+      return folly::makeFuture(Response{0, true});
     }
 
     if (!reader_->hasNext()) {
@@ -44,6 +48,7 @@ void BroadcastExchangeSource::request() {
       queue_->enqueueLocked(nullptr, promises);
     } else {
       auto buffer = reader_->next();
+      totalBytes = buffer->size();
       auto ioBuf = folly::IOBuf::wrapBuffer(buffer->as<char>(), buffer->size());
       queue_->enqueueLocked(
           std::make_unique<velox::exec::SerializedPage>(
@@ -54,6 +59,8 @@ void BroadcastExchangeSource::request() {
   for (auto& promise : promises) {
     promise.setValue();
   }
+
+  return folly::makeFuture(Response{totalBytes, atEnd_});
 }
 
 folly::F14FastMap<std::string, int64_t> BroadcastExchangeSource::stats() const {

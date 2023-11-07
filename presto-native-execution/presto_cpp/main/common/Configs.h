@@ -29,7 +29,7 @@ class ConfigBase {
   /// Reads configuration properties from the specified file. Must be called
   /// before calling any of the getters below.
   /// @param filePath Path to configuration file.
-  void initialize(const std::string& filePath);
+  virtual void initialize(const std::string& filePath);
 
   /// Uses a config object already materialized.
   void initialize(std::unique_ptr<velox::Config>&& config) {
@@ -130,6 +130,8 @@ class ConfigBase {
     return config_->valuesCopy();
   }
 
+  virtual ~ConfigBase() = default;
+
  protected:
   ConfigBase();
 
@@ -184,6 +186,15 @@ class SystemConfig : public ConfigBase {
       "experimental.spiller-spill-path"};
   static constexpr std::string_view kShutdownOnsetSec{"shutdown-onset-sec"};
   static constexpr std::string_view kSystemMemoryGb{"system-memory-gb"};
+  /// Specifies the total memory capacity that can be used by query execution in
+  /// GB. The query memory capacity should be configured less than the system
+  /// memory capacity ('system-memory-gb') to reserve memory for system usage
+  /// such as disk spilling and cache prefetch which are not counted in query
+  /// memory usage.
+  ///
+  /// NOTE: the query memory capacity is enforced by memory arbitrator so that
+  /// this config only applies if the memory arbitration has been enabled.
+  static constexpr std::string_view kQueryMemoryGb{"query-memory-gb"};
   static constexpr std::string_view kAsyncDataCacheEnabled{
       "async-data-cache-enabled"};
   static constexpr std::string_view kAsyncCacheSsdGb{"async-cache-ssd-gb"};
@@ -213,19 +224,17 @@ class SystemConfig : public ConfigBase {
   /// NOTE: this config only applies if the memory arbitration has been enabled.
   static constexpr std::string_view kMemoryPoolInitCapacity{
       "memory-pool-init-capacity"};
+
   /// The minimal memory capacity in bytes transferred between memory pools
   /// during memory arbitration.
   ///
   /// NOTE: this config only applies if the memory arbitration has been enabled.
   static constexpr std::string_view kMemoryPoolTransferCapacity{
       "memory-pool-transfer-capacity"};
-  /// The percentage of memory pool capacity reserved for system usage such as
-  /// the disk spilling memory usage.
-  ///
-  /// NOTE: this config only applies if the memory arbitration has been enabled.
-  static constexpr std::string_view kReservedMemoryPoolCapacityPct{
-      "reserved-memory-pool-capacity-pct"};
-
+  /// Enables the memory usage tracking for the system memory pool used for
+  /// cases such as disk spilling.
+  static constexpr std::string_view kEnableSystemMemoryPoolUsageTracking{
+      "enable_system_memory_pool_usage_tracking"};
   static constexpr std::string_view kEnableVeloxTaskLogging{
       "enable_velox_task_logging"};
   static constexpr std::string_view kEnableVeloxExprSetLogging{
@@ -237,6 +246,8 @@ class SystemConfig : public ConfigBase {
       "http-server.enable-access-log"};
   static constexpr std::string_view kHttpEnableStatsFilter{
       "http-server.enable-stats-filter"};
+  static constexpr std::string_view kHttpEnableEndpointLatencyFilter{
+      "http-server.enable-endpoint-latency-filter"};
   static constexpr std::string_view kRegisterTestFunctions{
       "register-test-functions"};
 
@@ -264,17 +275,37 @@ class SystemConfig : public ConfigBase {
   /// cleanup.
   static constexpr std::string_view kOldTaskCleanUpMs{"old-task-cleanup-ms"};
 
-  static constexpr std::string_view kAnnouncementMinFrequencyMs{
-      "announcement-min-frequency-ms"};
+  /// Enable periodic old task clean up. Typically enabled for presto (default)
+  /// and disabled for presto-on-spark.
+  static constexpr std::string_view kEnableOldTaskCleanUp{
+      "enable-old-task-cleanup"};
 
   static constexpr std::string_view kAnnouncementMaxFrequencyMs{
       "announcement-max-frequency-ms"};
 
+  /// Time (ms) after which we periodically send heartbeats to discovery
+  /// endpoint.
+  static constexpr std::string_view kHeartbeatFrequencyMs{
+      "heartbeat-frequency-ms"};
+
   static constexpr std::string_view kExchangeMaxErrorDuration{
       "exchange.max-error-duration"};
 
+  /// Enable to make immediate buffer memory transfer in the handling IO threads
+  /// as soon as exchange gets its response back. Otherwise the memory transfer
+  /// will happen later in driver thread pool.
+  static constexpr std::string_view kExchangeImmediateBufferTransfer{
+      "exchange.immediate-buffer-transfer"};
+
+  /// Specifies the timeout duration from exchange client's http connect
+  /// success to response reception.
   static constexpr std::string_view kExchangeRequestTimeout{
       "exchange.http-client.request-timeout"};
+
+  /// Specifies the timeout duration from exchange client's http connect
+  /// initiation to connect success. Set to 0 to have no timeout.
+  static constexpr std::string_view kExchangeConnectTimeout{
+      "exchange.http-client.connect-timeout"};
 
   /// The maximum timeslice for a task on thread if there are threads queued.
   static constexpr std::string_view kTaskRunTimeSliceMicros{
@@ -309,7 +340,21 @@ class SystemConfig : public ConfigBase {
   static constexpr std::string_view kRemoteFunctionServerCatalogName{
       "remote-function-server.catalog-name"};
 
+  /// Options to configure the internal (in-cluster) JWT authentication.
+  static constexpr std::string_view kInternalCommunicationJwtEnabled{
+      "internal-communication.jwt.enabled"};
+  static constexpr std::string_view kInternalCommunicationSharedSecret{
+      "internal-communication.shared-secret"};
+  static constexpr std::string_view kInternalCommunicationJwtExpirationSeconds{
+      "internal-communication.jwt.expiration-seconds"};
+
+  /// Uses legacy version of array_agg which ignores nulls.
+  static constexpr std::string_view kUseLegacyArrayAgg{
+      "deprecated.legacy-array-agg"};
+
   SystemConfig();
+
+  virtual ~SystemConfig() = default;
 
   static SystemConfig* instance();
 
@@ -407,15 +452,19 @@ class SystemConfig : public ConfigBase {
 
   std::string memoryArbitratorKind() const;
 
+  int32_t queryMemoryGb() const;
+
   uint64_t memoryPoolInitCapacity() const;
 
   uint64_t memoryPoolTransferCapacity() const;
 
-  uint32_t reservedMemoryPoolCapacityPct() const;
+  bool enableSystemMemoryPoolUsageTracking() const;
 
   bool enableHttpAccessLog() const;
 
   bool enableHttpStatsFilter() const;
+
+  bool enableHttpEndpointLatencyFilter() const;
 
   bool registerTestFunctions() const;
 
@@ -431,19 +480,33 @@ class SystemConfig : public ConfigBase {
 
   uint32_t logNumZombieTasks() const;
 
-  uint64_t announcementMinFrequencyMs() const;
-
   uint64_t announcementMaxFrequencyMs() const;
+
+  uint64_t heartbeatFrequencyMs() const;
 
   std::chrono::duration<double> exchangeMaxErrorDuration() const;
 
-  std::chrono::duration<double> exchangeRequestTimeout() const;
+  std::chrono::duration<double> exchangeRequestTimeoutMs() const;
+
+  std::chrono::duration<double> exchangeConnectTimeoutMs() const;
+
+  bool exchangeImmediateBufferTransfer() const;
 
   int32_t taskRunTimeSliceMicros() const;
 
   bool includeNodeInSpillPath() const;
 
   int32_t oldTaskCleanUpMs() const;
+
+  bool enableOldTaskCleanUp() const;
+
+  bool internalCommunicationJwtEnabled() const;
+
+  std::string internalCommunicationSharedSecret() const;
+
+  int32_t internalCommunicationJwtExpirationSeconds() const;
+
+  bool useLegacyArrayAgg() const;
 };
 
 /// Provides access to node properties defined in node.properties file.
@@ -451,11 +514,16 @@ class NodeConfig : public ConfigBase {
  public:
   static constexpr std::string_view kNodeEnvironment{"node.environment"};
   static constexpr std::string_view kNodeId{"node.id"};
+  // "node.ip" is Legacy Config. It is replaced with "node.internal-address"
   static constexpr std::string_view kNodeIp{"node.ip"};
+  static constexpr std::string_view kNodeInternalAddress{
+      "node.internal-address"};
   static constexpr std::string_view kNodeLocation{"node.location"};
   static constexpr std::string_view kNodeMemoryGb{"node.memory_gb"};
 
   NodeConfig();
+
+  virtual ~NodeConfig() = default;
 
   static NodeConfig* instance();
 
@@ -463,7 +531,7 @@ class NodeConfig : public ConfigBase {
 
   std::string nodeId() const;
 
-  std::string nodeIp(
+  std::string nodeInternalAddress(
       const std::function<std::string()>& defaultIp = nullptr) const;
 
   std::string nodeLocation() const;
@@ -479,7 +547,15 @@ class BaseVeloxQueryConfig : public ConfigBase {
  public:
   BaseVeloxQueryConfig();
 
+  virtual ~BaseVeloxQueryConfig() = default;
+
+  void initialize(const std::string& filePath) override;
+
   static BaseVeloxQueryConfig* instance();
+
+ private:
+  /// Update velox config with values from presto system config.
+  void update(const SystemConfig& config);
 };
 
 } // namespace facebook::presto

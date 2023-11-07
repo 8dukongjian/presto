@@ -19,8 +19,8 @@
 
 #pragma once
 
+#include "TypeSignatureVisitor.h"
 #include "antlr4-runtime.h"
-#include "presto_cpp/main/types/antlr/TypeSignatureVisitor.h"
 
 namespace facebook::presto::type {
 
@@ -83,6 +83,11 @@ class TypeSignatureBaseVisitor : public TypeSignatureVisitor {
 
   virtual antlrcpp::Any visitArray_type(
       TypeSignatureParser::Array_typeContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual antlrcpp::Any visitFunction_type(
+      TypeSignatureParser::Function_typeContext* ctx) override {
     return visitChildren(ctx);
   }
 

@@ -241,6 +241,7 @@ public class SymbolMapper
         return new TableWriterNode(
                 source.getSourceLocation(),
                 newNodeId,
+                node.getStatsEquivalentPlanNode(),
                 source,
                 node.getTarget(),
                 map(node.getRowCountVariable()),
@@ -251,7 +252,8 @@ public class SymbolMapper
                 node.getNotNullColumnVariables(),
                 node.getTablePartitioningScheme().map(partitioningScheme -> canonicalize(partitioningScheme, source)),
                 node.getPreferredShufflePartitioningScheme().map(partitioningScheme -> canonicalize(partitioningScheme, source)),
-                node.getStatisticsAggregation().map(this::map));
+                node.getStatisticsAggregation().map(this::map),
+                node.getTaskCountIfScaledWriter());
     }
 
     public StatisticsWriterNode map(StatisticsWriterNode node, PlanNode source)

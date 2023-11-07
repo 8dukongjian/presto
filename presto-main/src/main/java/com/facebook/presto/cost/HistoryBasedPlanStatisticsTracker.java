@@ -29,10 +29,14 @@ import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.HistoricalPlanStatistics;
 import com.facebook.presto.spi.statistics.HistoryBasedPlanStatisticsProvider;
 import com.facebook.presto.spi.statistics.HistoryBasedSourceInfo;
+import com.facebook.presto.spi.statistics.JoinNodeStatistics;
 import com.facebook.presto.spi.statistics.PlanStatistics;
 import com.facebook.presto.spi.statistics.PlanStatisticsWithSourceInfo;
+import com.facebook.presto.spi.statistics.TableWriterNodeStatistics;
 import com.facebook.presto.sql.planner.CanonicalPlan;
 import com.facebook.presto.sql.planner.PlanNodeCanonicalInfo;
+import com.facebook.presto.sql.planner.plan.JoinNode;
+import com.facebook.presto.sql.planner.plan.TableWriterNode;
 import com.facebook.presto.sql.planner.planPrinter.PlanNodeStats;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
@@ -51,6 +55,7 @@ import static com.facebook.presto.common.plan.PlanCanonicalizationStrategy.histo
 import static com.facebook.presto.common.resourceGroups.QueryType.INSERT;
 import static com.facebook.presto.common.resourceGroups.QueryType.SELECT;
 import static com.facebook.presto.cost.HistoricalPlanStatisticsUtil.updatePlanStatistics;
+import static com.facebook.presto.sql.planner.SystemPartitioningHandle.SCALED_WRITER_DISTRIBUTION;
 import static com.facebook.presto.sql.planner.planPrinter.PlanNodeStatsSummarizer.aggregateStageStats;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
@@ -129,6 +134,7 @@ public class HistoryBasedPlanStatisticsTracker
             if (!stageInfo.getPlan().isPresent()) {
                 continue;
             }
+            boolean isScaledWriterStage = stageInfo.getPlan().isPresent() && stageInfo.getPlan().get().getPartitioning().equals(SCALED_WRITER_DISTRIBUTION);
             PlanNode root = stageInfo.getPlan().get().getRoot();
             for (PlanNode planNode : forTree(PlanNode::getSources).depthFirstPreOrder(root)) {
                 if (!planNode.getStatsEquivalentPlanNode().isPresent()) {
@@ -142,6 +148,18 @@ public class HistoryBasedPlanStatisticsTracker
                 double outputBytes = adjustedOutputBytes(planNode, planNodeStats);
                 double nullJoinBuildKeyCount = planNodeStats.getPlanNodeNullJoinBuildKeyCount();
                 double joinBuildKeyCount = planNodeStats.getPlanNodeJoinBuildKeyCount();
+                double nullJoinProbeKeyCount = planNodeStats.getPlanNodeNullJoinProbeKeyCount();
+                double joinProbeKeyCount = planNodeStats.getPlanNodeJoinProbeKeyCount();
+
+                JoinNodeStatistics joinNodeStatistics = JoinNodeStatistics.empty();
+                if (planNode instanceof JoinNode) {
+                    joinNodeStatistics = new JoinNodeStatistics(Estimate.of(nullJoinBuildKeyCount), Estimate.of(joinBuildKeyCount), Estimate.of(nullJoinProbeKeyCount), Estimate.of(joinProbeKeyCount));
+                }
+
+                TableWriterNodeStatistics tableWriterNodeStatistics = TableWriterNodeStatistics.empty();
+                if (isScaledWriterStage && planNode instanceof TableWriterNode) {
+                    tableWriterNodeStatistics = new TableWriterNodeStatistics(Estimate.of(stageInfo.getLatestAttemptExecutionInfo().getStats().getTotalTasks()));
+                }
 
                 PlanNode statsEquivalentPlanNode = planNode.getStatsEquivalentPlanNode().get();
                 for (PlanCanonicalizationStrategy strategy : historyBasedPlanCanonicalizationStrategyList()) {
@@ -151,21 +169,23 @@ public class HistoryBasedPlanStatisticsTracker
                         String hash = planNodeCanonicalInfo.get().getHash();
                         List<PlanStatistics> inputTableStatistics = planNodeCanonicalInfo.get().getInputTableStatistics();
                         PlanNodeWithHash planNodeWithHash = new PlanNodeWithHash(statsEquivalentPlanNode, Optional.of(hash));
-                        // Plan node added after HistoricalStatisticsEquivalentPlanMarkingOptimizer will have the same hash as its source node. If the source node is join node,
-                        // the newly added node will have the same hash with the join but no join statistics, hence we need to overwrite in this case.
-                        if (!planStatistics.containsKey(planNodeWithHash) || nullJoinBuildKeyCount > 0 || joinBuildKeyCount > 0) {
-                            planStatistics.put(
-                                    planNodeWithHash,
-                                    new PlanStatisticsWithSourceInfo(
-                                            planNode.getId(),
-                                            new PlanStatistics(
-                                                    Estimate.of(outputPositions),
-                                                    Double.isNaN(outputBytes) ? Estimate.unknown() : Estimate.of(outputBytes),
-                                                    1.0,
-                                                    Estimate.of(nullJoinBuildKeyCount),
-                                                    Estimate.of(joinBuildKeyCount)),
-                                            new HistoryBasedSourceInfo(Optional.of(hash), Optional.of(inputTableStatistics))));
+                        // Plan node added after HistoricalStatisticsEquivalentPlanMarkingOptimizer will have the same hash as its source node. If the source node is not join or
+                        // table writer node, the newly added node will have the same hash but no join/table writer statistics, hence we need to overwrite in this case.
+                        PlanStatistics newPlanNodeStats = new PlanStatistics(
+                                Estimate.of(outputPositions),
+                                Double.isNaN(outputBytes) ? Estimate.unknown() : Estimate.of(outputBytes),
+                                1.0,
+                                joinNodeStatistics,
+                                tableWriterNodeStatistics);
+                        if (planStatistics.containsKey(planNodeWithHash)) {
+                            newPlanNodeStats = planStatistics.get(planNodeWithHash).getPlanStatistics().update(newPlanNodeStats);
                         }
+                        planStatistics.put(
+                                planNodeWithHash,
+                                new PlanStatisticsWithSourceInfo(
+                                        planNode.getId(),
+                                        newPlanNodeStats,
+                                        new HistoryBasedSourceInfo(Optional.of(hash), Optional.of(inputTableStatistics))));
                     }
                 }
             }
@@ -197,6 +217,10 @@ public class HistoryBasedPlanStatisticsTracker
     public void updateStatistics(QueryInfo queryInfo)
     {
         Session session = queryInfo.getSession().toSession(sessionPropertyManager);
+        if (!trackHistoryBasedPlanStatisticsEnabled(session)) {
+            historyBasedStatisticsCacheManager.invalidate(queryInfo.getQueryId());
+            return;
+        }
         Map<PlanNodeWithHash, PlanStatisticsWithSourceInfo> planStatistics = getQueryStats(queryInfo);
         Map<PlanNodeWithHash, HistoricalPlanStatistics> historicalPlanStatisticsMap =
                 historyBasedPlanStatisticsProvider.get().getStats(planStatistics.keySet().stream().collect(toImmutableList()), getHistoryBasedOptimizerTimeoutLimit(session).toMillis());

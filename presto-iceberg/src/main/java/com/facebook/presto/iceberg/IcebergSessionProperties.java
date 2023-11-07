@@ -19,13 +19,16 @@ import com.facebook.presto.hive.HiveCompressionCodec;
 import com.facebook.presto.hive.OrcFileWriterConfig;
 import com.facebook.presto.hive.ParquetFileWriterConfig;
 import com.facebook.presto.iceberg.nessie.NessieConfig;
+import com.facebook.presto.iceberg.util.HiveStatisticsMergeStrategy;
 import com.facebook.presto.orc.OrcWriteValidation;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.facebook.presto.spi.session.PropertyMetadata;
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
+import org.apache.parquet.column.ParquetProperties;
 
 import javax.inject.Inject;
 
@@ -50,6 +53,7 @@ public final class IcebergSessionProperties
     private static final String PARQUET_MAX_READ_BLOCK_SIZE = "parquet_max_read_block_size";
     private static final String PARQUET_WRITER_BLOCK_SIZE = "parquet_writer_block_size";
     private static final String PARQUET_WRITER_PAGE_SIZE = "parquet_writer_page_size";
+    private static final String PARQUET_WRITER_VERSION = "parquet_writer_version";
     private static final String PARQUET_USE_COLUMN_NAMES = "parquet_use_column_names";
     private static final String PARQUET_BATCH_READ_OPTIMIZATION_ENABLED = "parquet_batch_read_optimization_enabled";
     private static final String PARQUET_BATCH_READER_VERIFICATION_ENABLED = "parquet_batch_reader_verification_enabled";
@@ -78,6 +82,8 @@ public final class IcebergSessionProperties
     private static final String NESSIE_REFERENCE_HASH = "nessie_reference_hash";
     public static final String READ_MASKED_VALUE_ENABLED = "read_null_masked_parquet_encrypted_value_enabled";
     public static final String PARQUET_DEREFERENCE_PUSHDOWN_ENABLED = "parquet_dereference_pushdown_enabled";
+    public static final String MERGE_ON_READ_MODE_ENABLED = "merge_on_read_enabled";
+    public static final String HIVE_METASTORE_STATISTICS_MERGE_STRATEGY = "hive_statistics_merge_strategy";
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
@@ -129,6 +135,15 @@ public final class IcebergSessionProperties
                         "Parquet: Writer page size",
                         parquetFileWriterConfig.getPageSize(),
                         false),
+                new PropertyMetadata<>(
+                        PARQUET_WRITER_VERSION,
+                        "Parquet: Writer version",
+                        VARCHAR,
+                        ParquetProperties.WriterVersion.class,
+                        parquetFileWriterConfig.getWriterVersion(),
+                        false,
+                        value -> ParquetProperties.WriterVersion.valueOf(((String) value).toUpperCase()),
+                        ParquetProperties.WriterVersion::name),
                 booleanProperty(
                         ORC_BLOOM_FILTERS_ENABLED,
                         "ORC: Enable bloom filters for predicate pushdown",
@@ -273,7 +288,22 @@ public final class IcebergSessionProperties
                         PARQUET_DEREFERENCE_PUSHDOWN_ENABLED,
                         "Is dereference pushdown expression pushdown into Parquet reader enabled?",
                         icebergConfig.isParquetDereferencePushdownEnabled(),
-                        false));
+                        false),
+                booleanProperty(
+                        MERGE_ON_READ_MODE_ENABLED,
+                        "Reads enabled for merge-on-read Iceberg tables",
+                        icebergConfig.isMergeOnReadModeEnabled(),
+                        false),
+                new PropertyMetadata<>(
+                        HIVE_METASTORE_STATISTICS_MERGE_STRATEGY,
+                        "choose how to include statistics from the Hive Metastore when calculating table stats. Valid values are: "
+                                + Joiner.on(", ").join(HiveStatisticsMergeStrategy.values()),
+                        VARCHAR,
+                        HiveStatisticsMergeStrategy.class,
+                        icebergConfig.getHiveStatisticsMergeStrategy(),
+                        false,
+                        val -> HiveStatisticsMergeStrategy.valueOf((String) val),
+                        HiveStatisticsMergeStrategy::name));
     }
 
     public List<PropertyMetadata<?>> getSessionProperties()
@@ -299,6 +329,11 @@ public final class IcebergSessionProperties
     public static DataSize getParquetWriterBlockSize(ConnectorSession session)
     {
         return session.getProperty(PARQUET_WRITER_PAGE_SIZE, DataSize.class);
+    }
+
+    public static ParquetProperties.WriterVersion getParquetWriterVersion(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_WRITER_VERSION, ParquetProperties.WriterVersion.class);
     }
 
     public static PropertyMetadata<DataSize> dataSizeSessionProperty(String name, String description, DataSize defaultValue, boolean hidden)
@@ -444,5 +479,15 @@ public final class IcebergSessionProperties
     public static boolean isParquetDereferencePushdownEnabled(ConnectorSession session)
     {
         return session.getProperty(PARQUET_DEREFERENCE_PUSHDOWN_ENABLED, Boolean.class);
+    }
+
+    public static boolean isMergeOnReadModeEnabled(ConnectorSession session)
+    {
+        return session.getProperty(MERGE_ON_READ_MODE_ENABLED, Boolean.class);
+    }
+
+    public static HiveStatisticsMergeStrategy getHiveStatisticsMergeStrategy(ConnectorSession session)
+    {
+        return session.getProperty(HIVE_METASTORE_STATISTICS_MERGE_STRATEGY, HiveStatisticsMergeStrategy.class);
     }
 }

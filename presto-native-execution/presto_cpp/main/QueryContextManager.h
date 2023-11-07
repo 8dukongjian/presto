@@ -16,7 +16,6 @@
 #include <folly/Synchronized.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
-#include <list>
 #include <memory>
 #include <unordered_map>
 
@@ -26,7 +25,8 @@
 namespace facebook::presto {
 
 folly::CPUThreadPoolExecutor* driverCPUExecutor();
-folly::IOThreadPoolExecutor* spillExecutorPtr();
+folly::CPUThreadPoolExecutor* httpProcessingExecutorPtr();
+folly::CPUThreadPoolExecutor* spillExecutorPtr();
 
 class QueryContextCache {
  public:

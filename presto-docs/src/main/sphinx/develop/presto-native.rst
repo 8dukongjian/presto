@@ -21,7 +21,7 @@ HTTP endpoints related to tasks are registered to Proxygen in
 
 * POST: v1/task: This processes a `TaskUpdateRequest`
 * GET: v1/task: This returns a serialized `TaskInfo` (used for comprehensive
-  metrics, may be reported less frequently) 
+  metrics, may be reported less frequently)
 * GET: v1/task/status: This returns
   a serialized `TaskStatus` (used for query progress tracking, must be reported
   frequently)
@@ -104,5 +104,81 @@ The following properties allow the configuration of remote function execution:
 
     The UDS (unix domain socket) path to communicate with a local remote
     function server. If specified, takes precedence over
-    ``remote-function-server.thrift.address`` and 
+    ``remote-function-server.thrift.address`` and
     ``remote-function-server.thrift.port``.
+
+JWT authentication support
+--------------------------
+
+Prestissimo supports JWT authentication for internal communication.
+For details on the generally supported parameters visit `JWT <../security/internal-communication.html#jwt>`_.
+
+There is also an additional parameter:
+
+``internal-communication.jwt.expiration-seconds``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``integer``
+    * **Default value:** ``300``
+
+    There is a time period between creating the JWT on the client
+    and verification by the server.
+    If the time period is less than or equal to the parameter value, the request
+    is valid.
+    If the time period exceeds the parameter value, the request is rejected as
+    authentication failure (HTTP 401).
+
+Async Data Cache and Prefetching
+--------------------------------
+
+``num-connector-io-threads``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``integer``
+    * **Default value:** ``30``
+    * **Presto on Spark default value:** ``0``
+
+    Size of IO executor for connectors to do preload/prefetch.  Prefetch is
+    disabled if ``num-connector-io-threads`` is set to zero.
+
+``async-data-cache-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``bool``
+    * **Default value:** ``true``
+    * **Presto on Spark default value:** ``false``
+
+    Whether async data cache is enabled.  Setting ``async-data-cache-enabled``
+    to ``false`` disables split prefetching in table scan.
+
+``async-cache-ssd-gb``
+^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``integer``
+    * **Default value:** ``0``
+
+    Size of the SSD cache when async data cache is enabled.  Must be zero if
+    ``async-data-cache-enabled`` is ``false``.
+
+``enable-old-task-cleanup``
+^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``bool``
+    * **Default value:** ``true``
+    * **Presto on Spark default value:** ``false``
+
+    Enable periodic clean up of old tasks. This is ``true`` for Prestissimo,
+    however for Presto on Spark this defaults to ``false`` as zombie/stuck tasks
+    are handled by spark via speculative execution.
+
+``old-task-cleanup-ms``
+^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type** ``integer``
+    * **Default value:** ``60000``
+
+    Duration after which a task should be considered as old and will be eligible
+    for cleanup. Only applicable when ``enable-old-task-cleanup`` is ``true``.
+    Old task is defined as a PrestoTask which has not received heartbeat for at least
+    ``old-task-cleanup-ms``, or is not running and has an end time more than
+    ``old-task-cleanup-ms`` ago.

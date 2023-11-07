@@ -44,98 +44,6 @@ std::string bool2String(bool value) {
   { std::string(_key_), bool2String(_val_) }
 #define NONE_PROP(_key_) \
   { std::string(_key_), folly::none }
-
-enum class CapacityUnit {
-  BYTE,
-  KILOBYTE,
-  MEGABYTE,
-  GIGABYTE,
-  TERABYTE,
-  PETABYTE
-};
-
-double toBytesPerCapacityUnit(CapacityUnit unit) {
-  switch (unit) {
-    case CapacityUnit::BYTE:
-      return 1;
-    case CapacityUnit::KILOBYTE:
-      return exp2(10);
-    case CapacityUnit::MEGABYTE:
-      return exp2(20);
-    case CapacityUnit::GIGABYTE:
-      return exp2(30);
-    case CapacityUnit::TERABYTE:
-      return exp2(40);
-    case CapacityUnit::PETABYTE:
-      return exp2(50);
-    default:
-      VELOX_USER_FAIL("Invalid capacity unit '{}'", (int)unit);
-  }
-}
-
-CapacityUnit valueOfCapacityUnit(const std::string& unitStr) {
-  if (unitStr == "B") {
-    return CapacityUnit::BYTE;
-  }
-  if (unitStr == "kB") {
-    return CapacityUnit::KILOBYTE;
-  }
-  if (unitStr == "MB") {
-    return CapacityUnit::MEGABYTE;
-  }
-  if (unitStr == "GB") {
-    return CapacityUnit::GIGABYTE;
-  }
-  if (unitStr == "TB") {
-    return CapacityUnit::TERABYTE;
-  }
-  if (unitStr == "PB") {
-    return CapacityUnit::PETABYTE;
-  }
-  VELOX_USER_FAIL("Invalid capacity unit '{}'", unitStr);
-}
-
-// Convert capacity string with unit to the capacity number in the specified
-// units
-uint64_t toCapacity(const std::string& from, CapacityUnit to) {
-  static const RE2 kPattern(R"(^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*$)");
-  double value;
-  std::string unit;
-  if (!RE2::FullMatch(from, kPattern, &value, &unit)) {
-    VELOX_USER_FAIL("Invalid capacity string '{}'", from);
-  }
-
-  return value *
-      (toBytesPerCapacityUnit(valueOfCapacityUnit(unit)) /
-       toBytesPerCapacityUnit(to));
-}
-
-std::chrono::duration<double> toDuration(const std::string& str) {
-  static const RE2 kPattern(R"(^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*)");
-
-  double value;
-  std::string unit;
-  if (!RE2::FullMatch(str, kPattern, &value, &unit)) {
-    VELOX_USER_FAIL("Invalid duration {}", str);
-  }
-  if (unit == "ns") {
-    return std::chrono::duration<double, std::nano>(value);
-  } else if (unit == "us") {
-    return std::chrono::duration<double, std::micro>(value);
-  } else if (unit == "ms") {
-    return std::chrono::duration<double, std::milli>(value);
-  } else if (unit == "s") {
-    return std::chrono::duration<double>(value);
-  } else if (unit == "m") {
-    return std::chrono::duration<double, std::ratio<60>>(value);
-  } else if (unit == "h") {
-    return std::chrono::duration<double, std::ratio<60 * 60>>(value);
-  } else if (unit == "d") {
-    return std::chrono::duration<double, std::ratio<60 * 60 * 24>>(value);
-  }
-  VELOX_USER_FAIL("Invalid duration {}", str);
-}
-
 } // namespace
 
 ConfigBase::ConfigBase()
@@ -207,13 +115,14 @@ void ConfigBase::checkRegisteredProperties(
   }
   auto str = supported.str();
   if (!str.empty()) {
-    PRESTO_STARTUP_LOG(INFO) << "Registered '" << filePath_ << "' properties:\n"
-                             << str;
+    PRESTO_STARTUP_LOG(INFO)
+        << "Registered properties from '" << filePath_ << "':\n"
+        << str;
   }
   str = unsupported.str();
   if (!str.empty()) {
     PRESTO_STARTUP_LOG(WARNING)
-        << "Unregistered '" << filePath_ << "' properties:\n"
+        << "Unregistered properties from '" << filePath_ << "':\n"
         << str;
   }
 }
@@ -254,6 +163,7 @@ SystemConfig::SystemConfig() {
           NUM_PROP(kMmapArenaCapacityRatio, 10),
           STR_PROP(kUseMmapAllocator, "true"),
           STR_PROP(kMemoryArbitratorKind, ""),
+          NUM_PROP(kQueryMemoryGb, 38),
           STR_PROP(kEnableVeloxTaskLogging, "false"),
           STR_PROP(kEnableVeloxExprSetLogging, "false"),
           NUM_PROP(kLocalShuffleMaxPartitionBytes, 268435456),
@@ -261,6 +171,7 @@ SystemConfig::SystemConfig() {
           STR_PROP(kRemoteFunctionServerCatalogName, ""),
           STR_PROP(kHttpEnableAccessLog, "false"),
           STR_PROP(kHttpEnableStatsFilter, "false"),
+          STR_PROP(kHttpEnableEndpointLatencyFilter, "false"),
           STR_PROP(kRegisterTestFunctions, "false"),
           NUM_PROP(kHttpMaxAllocateBytes, 65536),
           STR_PROP(kQueryMaxMemoryPerNode, "4GB"),
@@ -269,13 +180,20 @@ SystemConfig::SystemConfig() {
           STR_PROP(kSkipRuntimeStatsInRunningTaskInfo, "true"),
           STR_PROP(kLogZombieTaskInfo, "false"),
           NUM_PROP(kLogNumZombieTasks, 20),
-          NUM_PROP(kAnnouncementMinFrequencyMs, 25'000), // 25s
-          NUM_PROP(kAnnouncementMaxFrequencyMs, 30'000), // 35s
+          NUM_PROP(kAnnouncementMaxFrequencyMs, 30'000), // 30s
+          NUM_PROP(kHeartbeatFrequencyMs, 0),
           STR_PROP(kExchangeMaxErrorDuration, "30s"),
           STR_PROP(kExchangeRequestTimeout, "10s"),
+          STR_PROP(kExchangeConnectTimeout, "0s"),
+          BOOL_PROP(kExchangeImmediateBufferTransfer, true),
           NUM_PROP(kTaskRunTimeSliceMicros, 50'000),
           BOOL_PROP(kIncludeNodeInSpillPath, false),
           NUM_PROP(kOldTaskCleanUpMs, 60'000),
+          BOOL_PROP(kEnableOldTaskCleanUp, true),
+          STR_PROP(kInternalCommunicationJwtEnabled, "false"),
+          STR_PROP(kInternalCommunicationSharedSecret, ""),
+          NUM_PROP(kInternalCommunicationJwtExpirationSeconds, 300),
+          BOOL_PROP(kUseLegacyArrayAgg, false),
       };
 }
 
@@ -465,6 +383,10 @@ std::string SystemConfig::memoryArbitratorKind() const {
   return optionalProperty<std::string>(kMemoryArbitratorKind).value_or("");
 }
 
+int32_t SystemConfig::queryMemoryGb() const {
+  return optionalProperty<int32_t>(kQueryMemoryGb).value();
+}
+
 uint64_t SystemConfig::memoryPoolInitCapacity() const {
   static constexpr uint64_t kMemoryPoolInitCapacityDefault = 128 << 20;
   return optionalProperty<uint64_t>(kMemoryPoolInitCapacity)
@@ -477,10 +399,9 @@ uint64_t SystemConfig::memoryPoolTransferCapacity() const {
       .value_or(kMemoryPoolTransferCapacityDefault);
 }
 
-uint32_t SystemConfig::reservedMemoryPoolCapacityPct() const {
-  static constexpr uint64_t kReservedMemoryPoolCapacityPctDefault = 10;
-  return optionalProperty<uint32_t>(kReservedMemoryPoolCapacityPct)
-      .value_or(kReservedMemoryPoolCapacityPctDefault);
+bool SystemConfig::enableSystemMemoryPoolUsageTracking() const {
+  return optionalProperty<bool>(kEnableSystemMemoryPoolUsageTracking)
+      .value_or(true);
 }
 
 bool SystemConfig::enableHttpAccessLog() const {
@@ -489,6 +410,10 @@ bool SystemConfig::enableHttpAccessLog() const {
 
 bool SystemConfig::enableHttpStatsFilter() const {
   return optionalProperty<bool>(kHttpEnableStatsFilter).value();
+}
+
+bool SystemConfig::enableHttpEndpointLatencyFilter() const {
+  return optionalProperty<bool>(kHttpEnableEndpointLatencyFilter).value();
 }
 
 bool SystemConfig::registerTestFunctions() const {
@@ -501,7 +426,8 @@ uint64_t SystemConfig::httpMaxAllocateBytes() const {
 
 uint64_t SystemConfig::queryMaxMemoryPerNode() const {
   return toCapacity(
-      optionalProperty(kQueryMaxMemoryPerNode).value(), CapacityUnit::BYTE);
+      optionalProperty(kQueryMaxMemoryPerNode).value(),
+      velox::core::CapacityUnit::BYTE);
 }
 
 bool SystemConfig::enableMemoryLeakCheck() const {
@@ -520,20 +446,31 @@ uint32_t SystemConfig::logNumZombieTasks() const {
   return optionalProperty<uint32_t>(kLogNumZombieTasks).value();
 }
 
-uint64_t SystemConfig::announcementMinFrequencyMs() const {
-  return optionalProperty<uint64_t>(kAnnouncementMinFrequencyMs).value();
-}
-
 uint64_t SystemConfig::announcementMaxFrequencyMs() const {
   return optionalProperty<uint64_t>(kAnnouncementMaxFrequencyMs).value();
 }
 
-std::chrono::duration<double> SystemConfig::exchangeMaxErrorDuration() const {
-  return toDuration(optionalProperty(kExchangeMaxErrorDuration).value());
+uint64_t SystemConfig::heartbeatFrequencyMs() const {
+  return optionalProperty<uint64_t>(kHeartbeatFrequencyMs).value();
 }
 
-std::chrono::duration<double> SystemConfig::exchangeRequestTimeout() const {
-  return toDuration(optionalProperty(kExchangeRequestTimeout).value());
+std::chrono::duration<double> SystemConfig::exchangeMaxErrorDuration() const {
+  return velox::core::toDuration(
+      optionalProperty(kExchangeMaxErrorDuration).value());
+}
+
+std::chrono::duration<double> SystemConfig::exchangeRequestTimeoutMs() const {
+  return velox::core::toDuration(
+      optionalProperty(kExchangeRequestTimeout).value());
+}
+
+std::chrono::duration<double> SystemConfig::exchangeConnectTimeoutMs() const {
+  return velox::core::toDuration(
+      optionalProperty(kExchangeConnectTimeout).value());
+}
+
+bool SystemConfig::exchangeImmediateBufferTransfer() const {
+  return optionalProperty<bool>(kExchangeImmediateBufferTransfer).value();
 }
 
 int32_t SystemConfig::taskRunTimeSliceMicros() const {
@@ -548,12 +485,36 @@ int32_t SystemConfig::oldTaskCleanUpMs() const {
   return optionalProperty<int32_t>(kOldTaskCleanUpMs).value();
 }
 
+bool SystemConfig::enableOldTaskCleanUp() const {
+  return optionalProperty<bool>(kEnableOldTaskCleanUp).value();
+}
+
+// The next three toggles govern the use of JWT for authentication
+// for communication between the cluster nodes.
+bool SystemConfig::internalCommunicationJwtEnabled() const {
+  return optionalProperty<bool>(kInternalCommunicationJwtEnabled).value();
+}
+
+std::string SystemConfig::internalCommunicationSharedSecret() const {
+  return optionalProperty(kInternalCommunicationSharedSecret).value();
+}
+
+int32_t SystemConfig::internalCommunicationJwtExpirationSeconds() const {
+  return optionalProperty<int32_t>(kInternalCommunicationJwtExpirationSeconds)
+      .value();
+}
+
+bool SystemConfig::useLegacyArrayAgg() const {
+  return optionalProperty<bool>(kUseLegacyArrayAgg).value();
+}
+
 NodeConfig::NodeConfig() {
   registeredProps_ =
       std::unordered_map<std::string, folly::Optional<std::string>>{
           NONE_PROP(kNodeEnvironment),
           NONE_PROP(kNodeId),
           NONE_PROP(kNodeIp),
+          NONE_PROP(kNodeInternalAddress),
           NONE_PROP(kNodeLocation),
           NONE_PROP(kNodeMemoryGb),
       };
@@ -576,16 +537,21 @@ std::string NodeConfig::nodeLocation() const {
   return requiredProperty(kNodeLocation);
 }
 
-std::string NodeConfig::nodeIp(
+std::string NodeConfig::nodeInternalAddress(
     const std::function<std::string()>& defaultIp) const {
-  auto resultOpt = optionalProperty(kNodeIp);
+  auto resultOpt = optionalProperty(kNodeInternalAddress);
+  /// node.ip(kNodeIp) is legacy config replaced with node.internal-address, but
+  /// still valid config in Presto, so handling both.
+  if (!resultOpt.hasValue()) {
+    resultOpt = optionalProperty(kNodeIp);
+  }
   if (resultOpt.has_value()) {
     return resultOpt.value();
   } else if (defaultIp != nullptr) {
     return defaultIp();
   } else {
     VELOX_FAIL(
-        "Node IP was not found in NodeConfigs. Default IP was not provided "
+        "Node Internal Address or IP was not found in NodeConfigs. Default IP was not provided "
         "either.");
   }
 }
@@ -688,20 +654,27 @@ BaseVeloxQueryConfig::BaseVeloxQueryConfig() {
           NUM_PROP(
               QueryConfig::kJoinSpillPartitionBits, c.joinSpillPartitionBits()),
           NUM_PROP(
-              QueryConfig::kAggregationSpillPartitionBits,
-              c.aggregationSpillPartitionBits()),
-          NUM_PROP(
               QueryConfig::kSpillableReservationGrowthPct,
               c.spillableReservationGrowthPct()),
           BOOL_PROP(
-              QueryConfig::kSparkLegacySizeOfNull, c.sparkLegacySizeOfNull()),
-      };
+              QueryConfig::kSparkLegacySizeOfNull, c.sparkLegacySizeOfNull())};
+  update(*SystemConfig::instance());
 }
 
 BaseVeloxQueryConfig* BaseVeloxQueryConfig::instance() {
   static std::unique_ptr<BaseVeloxQueryConfig> instance =
       std::make_unique<BaseVeloxQueryConfig>();
   return instance.get();
+}
+
+void BaseVeloxQueryConfig::initialize(const std::string& filePath) {
+  ConfigBase::initialize(filePath);
+  update(*SystemConfig::instance());
+}
+
+void BaseVeloxQueryConfig::update(const SystemConfig& systemConfig) {
+  registeredProps_[velox::core::QueryConfig::kPrestoArrayAggIgnoreNulls] =
+      bool2String(systemConfig.useLegacyArrayAgg());
 }
 
 } // namespace facebook::presto

@@ -19,7 +19,7 @@
 #include "presto_cpp/main/QueryContextManager.h"
 #include "presto_cpp/main/http/HttpServer.h"
 #include "presto_cpp/presto_protocol/presto_protocol.h"
-#include "velox/exec/PartitionedOutputBufferManager.h"
+#include "velox/exec/OutputBufferManager.h"
 
 namespace facebook::presto {
 
@@ -41,6 +41,8 @@ class TaskManager {
   void setNodeId(const std::string& nodeId);
 
   void setBaseSpillDirectory(const std::string& baseSpillDirectory);
+
+  bool emptyBaseSpillDirectory() const;
 
   /// Sets the time (ms) that a task is considered to be old for cleanup since
   /// its completion.
@@ -101,7 +103,7 @@ class TaskManager {
 
   folly::Future<std::unique_ptr<Result>> getResults(
       const protocol::TaskId& taskId,
-      long bufferId,
+      long destination,
       long token,
       protocol::DataSize maxSize,
       protocol::Duration maxWait,
@@ -170,18 +172,14 @@ class TaskManager {
       const protocol::TaskId& taskId,
       long startProcessCpuTime = 0);
 
-  std::shared_ptr<PrestoTask> findOrCreateTaskLocked(
-      TaskMap& taskMap,
-      const protocol::TaskId& taskId,
-      long startProcessCpuTime = 0);
-
   std::string baseUri_;
   std::string nodeId_;
-  std::string baseSpillDir_;
+  folly::Synchronized<std::string> baseSpillDir_;
   int32_t oldTaskCleanUpMs_;
-  std::shared_ptr<velox::exec::PartitionedOutputBufferManager> bufferManager_;
+  std::shared_ptr<velox::exec::OutputBufferManager> bufferManager_;
   folly::Synchronized<TaskMap> taskMap_;
   QueryContextManager queryContextManager_;
+  folly::Executor* httpProcessingExecutor_{httpProcessingExecutorPtr()};
 };
 
 } // namespace facebook::presto

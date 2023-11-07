@@ -20,9 +20,11 @@ import com.facebook.presto.common.block.RunLengthEncodedBlock;
 import com.facebook.presto.common.type.DecimalType;
 import com.facebook.presto.common.type.Decimals;
 import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimestampType;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.common.type.VarcharType;
+import com.facebook.presto.hive.HivePartitionKey;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.PrestoException;
 import io.airlift.slice.Slice;
@@ -31,6 +33,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -49,12 +52,15 @@ import static com.facebook.presto.iceberg.IcebergErrorCode.ICEBERG_INVALID_PARTI
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.lang.Double.parseDouble;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.parseFloat;
 import static java.lang.Long.parseLong;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MICROSECONDS;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class IcebergPageSource
         implements ConnectorPageSource
@@ -65,7 +71,7 @@ public class IcebergPageSource
 
     public IcebergPageSource(
             List<IcebergColumnHandle> columns,
-            Map<Integer, String> partitionKeys,
+            Map<Integer, HivePartitionKey> partitionKeys,
             ConnectorPageSource delegate,
             TimeZoneKey timeZoneKey)
     {
@@ -80,10 +86,10 @@ public class IcebergPageSource
         int delegateIndex = 0;
         for (IcebergColumnHandle column : columns) {
             if (partitionKeys.containsKey(column.getId())) {
-                String partitionValue = partitionKeys.get(column.getId());
+                HivePartitionKey icebergPartition = partitionKeys.get(column.getId());
                 Type type = column.getType();
-                Object prefilledValue = deserializePartitionValue(type, partitionValue, column.getName(), timeZoneKey);
-                prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(type, prefilledValue);
+                Object prefilledValue = deserializePartitionValue(type, icebergPartition.getValue().orElse(null), column.getName(), timeZoneKey);
+                prefilledBlocks[outputIndex] = nativeValueToBlock(type, prefilledValue);
                 delegateIndexes[outputIndex] = -1;
             }
             else {
@@ -218,7 +224,7 @@ public class IcebergPageSource
                 return value;
             }
             if (type.equals(VarbinaryType.VARBINARY)) {
-                return utf8Slice(valueString);
+                return wrappedBuffer(Base64.getDecoder().decode(valueString));
             }
             if (isShortDecimal(type) || isLongDecimal(type)) {
                 DecimalType decimalType = (DecimalType) type;
@@ -240,5 +246,13 @@ public class IcebergPageSource
         }
         // Iceberg tables don't partition by non-primitive-type columns.
         throw new PrestoException(GENERIC_INTERNAL_ERROR, "Invalid partition type " + type.toString());
+    }
+
+    private Block nativeValueToBlock(Type type, Object prefilledValue)
+    {
+        if (prefilledValue != null && type instanceof TimestampType && ((TimestampType) type).getPrecision() == MILLISECONDS) {
+            return Utils.nativeValueToBlock(type, MICROSECONDS.toMillis((long) prefilledValue));
+        }
+        return Utils.nativeValueToBlock(type, prefilledValue);
     }
 }

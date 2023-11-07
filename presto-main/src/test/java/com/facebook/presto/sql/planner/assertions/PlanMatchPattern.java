@@ -389,6 +389,11 @@ public final class PlanMatchPattern
         return node(SemiJoinNode.class, source, filtering).with(new SemiJoinMatcher(sourceSymbolAlias, filteringSymbolAlias, outputAlias, distributionType));
     }
 
+    public static PlanMatchPattern join(PlanMatchPattern left, PlanMatchPattern right)
+    {
+        return node(JoinNode.class, left, right);
+    }
+
     public static PlanMatchPattern join(JoinNode.Type joinType, List<ExpectedValueProvider<JoinNode.EquiJoinClause>> expectedEquiCriteria, PlanMatchPattern left, PlanMatchPattern right)
     {
         return join(joinType, expectedEquiCriteria, Optional.empty(), left, right);
@@ -756,9 +761,9 @@ public final class PlanMatchPattern
         return this;
     }
 
-    public PlanMatchPattern withJoinBuildKeyStatistics(double expectedJoinBuildKeyCount, double expectedNullJoinBuildKeyCount)
+    public PlanMatchPattern withJoinStatistics(double expectedJoinBuildKeyCount, double expectedNullJoinBuildKeyCount, double expectedJoinProbeKeyCount, double expectedNullJoinProbeKeyCount)
     {
-        matchers.add(new StatsJoinBuildKeyCountMatcher(expectedJoinBuildKeyCount, expectedNullJoinBuildKeyCount));
+        matchers.add(new StatsJoinKeyCountMatcher(expectedJoinBuildKeyCount, expectedNullJoinBuildKeyCount, expectedJoinProbeKeyCount, expectedNullJoinProbeKeyCount));
         return this;
     }
 

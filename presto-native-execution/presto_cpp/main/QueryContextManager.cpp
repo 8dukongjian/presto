@@ -31,12 +31,19 @@ static std::shared_ptr<folly::CPUThreadPoolExecutor>& executor() {
   return executor;
 }
 
-std::shared_ptr<folly::IOThreadPoolExecutor> spillExecutor() {
+std::shared_ptr<folly::CPUThreadPoolExecutor>& httpProcessingExecutor() {
+  static auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(
+      SystemConfig::instance()->numQueryThreads(),
+      std::make_shared<folly::NamedThreadFactory>("HttpProcessing"));
+  return executor;
+}
+
+std::shared_ptr<folly::CPUThreadPoolExecutor> spillExecutor() {
   const int32_t numSpillThreads = SystemConfig::instance()->numSpillThreads();
   if (numSpillThreads <= 0) {
     return nullptr;
   }
-  static auto executor = std::make_shared<folly::IOThreadPoolExecutor>(
+  static auto executor = std::make_shared<folly::CPUThreadPoolExecutor>(
       numSpillThreads, std::make_shared<folly::NamedThreadFactory>("Spiller"));
   return executor;
 }
@@ -46,18 +53,32 @@ folly::CPUThreadPoolExecutor* driverCPUExecutor() {
   return executor().get();
 }
 
-folly::IOThreadPoolExecutor* spillExecutorPtr() {
+folly::CPUThreadPoolExecutor* httpProcessingExecutorPtr() {
+  return httpProcessingExecutor().get();
+}
+
+folly::CPUThreadPoolExecutor* spillExecutorPtr() {
   return spillExecutor().get();
 }
 
 namespace {
+std::string maybeRemoveNativePrefix(const std::string& name) {
+  static const std::string kNativePrefix = "native_";
+  const auto result =
+      ::strncmp(name.c_str(), kNativePrefix.c_str(), kNativePrefix.size());
+  if (result == 0) {
+    return name.substr(kNativePrefix.length());
+  }
+  return name;
+}
+
 std::unordered_map<std::string, std::string> toConfigs(
     const protocol::SessionRepresentation& session) {
   // Use base velox query config as the starting point and add Presto session
   // properties on top of it.
   auto configs = BaseVeloxQueryConfig::instance()->values();
   for (const auto& it : session.systemProperties) {
-    configs[it.first] = it.second;
+    configs[maybeRemoveNativePrefix(it.first)] = it.second;
   }
 
   // If there's a timeZoneKey, convert to timezone name and add to the
@@ -124,16 +145,19 @@ std::shared_ptr<core::QueryCtx> QueryContextManager::findOrCreateQueryCtx(
         {entry.first, std::make_shared<core::MemConfig>(entry.second)});
   }
 
+  velox::core::QueryConfig queryConfig{std::move(configStrings)};
   auto pool = memory::defaultMemoryManager().addRootPool(
       queryId,
-      SystemConfig::instance()->queryMaxMemoryPerNode(),
+      queryConfig.queryMaxMemoryPerNode() != 0
+          ? queryConfig.queryMaxMemoryPerNode()
+          : SystemConfig::instance()->queryMaxMemoryPerNode(),
       !SystemConfig::instance()->memoryArbitratorKind().empty()
           ? memory::MemoryReclaimer::create()
           : nullptr);
 
   auto queryCtx = std::make_shared<core::QueryCtx>(
       executor().get(),
-      std::move(configStrings),
+      std::move(queryConfig),
       connectorConfigs,
       cache::AsyncDataCache::getInstance(),
       std::move(pool),

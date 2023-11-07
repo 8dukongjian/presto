@@ -193,6 +193,7 @@ public class FeaturesConfig
     private boolean optimizedRepartitioningEnabled;
 
     private boolean pushdownSubfieldsEnabled;
+    private boolean pushdownSubfieldsFromLambdaEnabled;
 
     private boolean tableWriterMergeOperatorEnabled = true;
 
@@ -254,6 +255,8 @@ public class FeaturesConfig
     private boolean nativeExecutionProcessReuseEnabled = true;
     private boolean randomizeOuterJoinNullKey;
     private RandomizeOuterJoinNullKeyStrategy randomizeOuterJoinNullKeyStrategy = RandomizeOuterJoinNullKeyStrategy.DISABLED;
+    private ShardedJoinStrategy shardedJoinStrategy = ShardedJoinStrategy.DISABLED;
+    private int joinShardCount = 100;
     private boolean isOptimizeConditionalAggregationEnabled;
     private boolean isRemoveRedundantDistinctAggregationEnabled = true;
     private boolean inPredicatesAsInnerJoinsEnabled;
@@ -268,13 +271,20 @@ public class FeaturesConfig
     private PushDownFilterThroughCrossJoinStrategy pushDownFilterExpressionEvaluationThroughCrossJoin = PushDownFilterThroughCrossJoinStrategy.REWRITTEN_TO_INNER_JOIN;
     private boolean rewriteCrossJoinWithOrFilterToInnerJoin = true;
     private boolean rewriteCrossJoinWithArrayContainsFilterToInnerJoin = true;
+    private boolean rewriteCrossJoinWithArrayNotContainsFilterToAntiJoin = true;
     private JoinNotNullInferenceStrategy joinNotNullInferenceStrategy = NONE;
     private boolean leftJoinNullFilterToSemiJoin = true;
     private boolean broadcastJoinWithSmallBuildUnknownProbe;
     private boolean addPartialNodeForRowNumberWithLimit = true;
-    private boolean pullUpExpressionFromLambda = true;
+    private boolean inferInequalityPredicates;
+    private boolean pullUpExpressionFromLambda;
+    private boolean rewriteConstantArrayContainsToIn;
 
     private boolean preProcessMetadataCalls;
+    private boolean handleComplexEquiJoins;
+    private boolean useHBOForScaledWriters;
+
+    private boolean removeRedundantCastToVarcharInJoin = true;
 
     public enum PartitioningPrecisionStrategy
     {
@@ -363,6 +373,14 @@ public class FeaturesConfig
     {
         DISABLED,
         KEY_FROM_OUTER_JOIN, // Enabled only when join keys are from output of outer joins
+        COST_BASED,
+        ALWAYS
+    }
+
+    public enum ShardedJoinStrategy
+    {
+        DISABLED,
+        COST_BASED,
         ALWAYS
     }
 
@@ -1561,7 +1579,8 @@ public class FeaturesConfig
         return fragmentResultCachingEnabled;
     }
 
-    @Config("experimental.fragment-result-caching-enabled")
+    @Config("fragment-result-cache.enabled")
+    @LegacyConfig("experimental.fragment-result-caching-enabled")
     @ConfigDescription("Enable fragment result caching and read/write leaf fragment result pages from/to cache when applicable")
     public FeaturesConfig setFragmentResultCachingEnabled(boolean fragmentResultCachingEnabled)
     {
@@ -1825,6 +1844,19 @@ public class FeaturesConfig
     public boolean isPushdownSubfieldsEnabled()
     {
         return pushdownSubfieldsEnabled;
+    }
+
+    @Config("pushdown-subfields-from-lambda-enabled")
+    @ConfigDescription("Enable subfield pruning from lambda expressions")
+    public FeaturesConfig setPushdownSubfieldsFromLambdaEnabled(boolean pushdownSubfieldsFromLambdaEnabled)
+    {
+        this.pushdownSubfieldsFromLambdaEnabled = pushdownSubfieldsFromLambdaEnabled;
+        return this;
+    }
+
+    public boolean isPushdownSubfieldsFromLambdaEnabled()
+    {
+        return pushdownSubfieldsFromLambdaEnabled;
     }
 
     @Config("experimental.pushdown-dereference-enabled")
@@ -2489,6 +2521,32 @@ public class FeaturesConfig
         return this;
     }
 
+    public ShardedJoinStrategy getShardedJoinStrategy()
+    {
+        return shardedJoinStrategy;
+    }
+
+    @Config("optimizer.sharded-join-strategy")
+    @ConfigDescription("When to apply sharding to mitigate skew in joins")
+    public FeaturesConfig setShardedJoinStrategy(ShardedJoinStrategy shardedJoinStrategy)
+    {
+        this.shardedJoinStrategy = shardedJoinStrategy;
+        return this;
+    }
+
+    public int getJoinShardCount()
+    {
+        return joinShardCount;
+    }
+
+    @Config("optimizer.join-shard-count")
+    @ConfigDescription("Number of shards to use for sharded join optimization")
+    public FeaturesConfig setJoinShardCount(int joinShardCount)
+    {
+        this.joinShardCount = joinShardCount;
+        return this;
+    }
+
     public boolean isOptimizeConditionalAggregationEnabled()
     {
         return isOptimizeConditionalAggregationEnabled;
@@ -2658,6 +2716,19 @@ public class FeaturesConfig
         return this;
     }
 
+    public boolean isRewriteCrossJoinWithArrayNotContainsFilterToAntiJoin()
+    {
+        return this.rewriteCrossJoinWithArrayNotContainsFilterToAntiJoin;
+    }
+
+    @Config("optimizer.rewrite-cross-join-with-array-not-contains-filter-to-anti-join")
+    @ConfigDescription("Enable optimization to rewrite cross join with array not contains filter to anti join")
+    public FeaturesConfig setRewriteCrossJoinWithArrayNotContainsFilterToAntiJoin(boolean rewriteCrossJoinWithArrayNotContainsFilterToAntiJoin)
+    {
+        this.rewriteCrossJoinWithArrayNotContainsFilterToAntiJoin = rewriteCrossJoinWithArrayNotContainsFilterToAntiJoin;
+        return this;
+    }
+
     public boolean isLeftJoinNullFilterToSemiJoin()
     {
         return this.leftJoinNullFilterToSemiJoin;
@@ -2707,6 +2778,71 @@ public class FeaturesConfig
     public FeaturesConfig setPullUpExpressionFromLambdaEnabled(boolean pullUpExpressionFromLambda)
     {
         this.pullUpExpressionFromLambda = pullUpExpressionFromLambda;
+        return this;
+    }
+
+    public boolean getInferInequalityPredicates()
+    {
+        return inferInequalityPredicates;
+    }
+
+    @Config("optimizer.infer-inequality-predicates")
+    @ConfigDescription("Enabled inference of inequality predicates for joins")
+    public FeaturesConfig setInferInequalityPredicates(boolean inferInequalityPredicates)
+    {
+        this.inferInequalityPredicates = inferInequalityPredicates;
+        return this;
+    }
+
+    public boolean isRewriteConstantArrayContainsToInEnabled()
+    {
+        return this.rewriteConstantArrayContainsToIn;
+    }
+
+    @Config("optimizer.rewrite-constant-array-contains-to-in")
+    @ConfigDescription("Rewrite constant array contains function to IN expression")
+    public FeaturesConfig setRewriteConstantArrayContainsToInEnabled(boolean rewriteConstantArrayContainsToIn)
+    {
+        this.rewriteConstantArrayContainsToIn = rewriteConstantArrayContainsToIn;
+        return this;
+    }
+
+    public boolean isUseHBOForScaledWriters()
+    {
+        return this.useHBOForScaledWriters;
+    }
+
+    @Config("optimizer.use-hbo-for-scaled-writers")
+    @ConfigDescription("Enable HBO for setting initial number of tasks for scaled writers")
+    public FeaturesConfig setUseHBOForScaledWriters(boolean useHBOForScaledWriters)
+    {
+        this.useHBOForScaledWriters = useHBOForScaledWriters;
+        return this;
+    }
+
+    public boolean isRemoveRedundantCastToVarcharInJoin()
+    {
+        return removeRedundantCastToVarcharInJoin;
+    }
+
+    @Config("optimizer.remove-redundant-cast-to-varchar-in-join")
+    @ConfigDescription("If both left and right side of join clause are varchar cast from int/bigint, remove the cast")
+    public FeaturesConfig setRemoveRedundantCastToVarcharInJoin(boolean removeRedundantCastToVarcharInJoin)
+    {
+        this.removeRedundantCastToVarcharInJoin = removeRedundantCastToVarcharInJoin;
+        return this;
+    }
+
+    public boolean getHandleComplexEquiJoins()
+    {
+        return handleComplexEquiJoins;
+    }
+
+    @Config("optimizer.handle-complex-equi-joins")
+    @ConfigDescription("Handle complex equi-join conditions to open up join space for join reordering")
+    public FeaturesConfig setHandleComplexEquiJoins(boolean handleComplexEquiJoins)
+    {
+        this.handleComplexEquiJoins = handleComplexEquiJoins;
         return this;
     }
 }

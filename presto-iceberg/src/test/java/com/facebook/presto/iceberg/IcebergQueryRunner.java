@@ -17,6 +17,7 @@ import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.log.Logging;
 import com.facebook.presto.Session;
 import com.facebook.presto.connector.jmx.JmxPlugin;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.common.collect.ImmutableMap;
@@ -27,6 +28,8 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.OptionalInt;
 
+import static com.facebook.presto.iceberg.CatalogType.HIVE;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.tests.QueryAssertions.copyTpchTables;
 import static com.facebook.presto.tpch.TpchMetadata.TINY_SCHEMA_NAME;
@@ -36,6 +39,8 @@ public final class IcebergQueryRunner
     private static final Logger log = Logger.get(IcebergQueryRunner.class);
 
     public static final String ICEBERG_CATALOG = "iceberg";
+    public static final String TEST_DATA_DIRECTORY = "iceberg_data";
+    public static final String TEST_CATALOG_DIRECTORY = "catalog";
 
     private IcebergQueryRunner() {}
 
@@ -98,15 +103,14 @@ public final class IcebergQueryRunner
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.createCatalog("tpch", "tpch");
 
-        Path dataDirectory = queryRunner.getCoordinator().getDataDirectory().resolve("iceberg_data");
-        Path catalogDirectory = dataDirectory.getParent().resolve("catalog");
+        Path dataDirectory = queryRunner.getCoordinator().getDataDirectory();
 
         queryRunner.installPlugin(new IcebergPlugin());
+
+        String catalogType = extraConnectorProperties.getOrDefault("iceberg.catalog.type", HIVE.name());
         Map<String, String> icebergProperties = ImmutableMap.<String, String>builder()
-                .put("hive.metastore", "file")
-                .put("hive.metastore.catalog.dir", catalogDirectory.toFile().toURI().toString())
                 .put("iceberg.file-format", format.name())
-                .put("iceberg.catalog.warehouse", dataDirectory.getParent().toFile().toURI().toString())
+                .putAll(getConnectorProperties(CatalogType.valueOf(catalogType), dataDirectory))
                 .putAll(extraConnectorProperties)
                 .build();
 
@@ -124,6 +128,22 @@ public final class IcebergQueryRunner
         }
 
         return queryRunner;
+    }
+
+    private static Map<String, String> getConnectorProperties(CatalogType icebergCatalogType, Path icebergDataDirectory)
+    {
+        Path testDataDirectory = icebergDataDirectory.resolve(TEST_DATA_DIRECTORY);
+        switch (icebergCatalogType) {
+            case HADOOP:
+            case NESSIE:
+                return ImmutableMap.of("iceberg.catalog.warehouse", testDataDirectory.getParent().toFile().toURI().toString());
+            case HIVE:
+                Path testCatalogDirectory = testDataDirectory.getParent().resolve(TEST_CATALOG_DIRECTORY);
+                return ImmutableMap.of(
+                        "hive.metastore", "file",
+                        "hive.metastore.catalog.dir", testCatalogDirectory.toFile().toURI().toString());
+        }
+        throw new PrestoException(NOT_SUPPORTED, "Unsupported Presto Iceberg catalog type " + icebergCatalogType);
     }
 
     public static void main(String[] args)

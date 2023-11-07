@@ -16,7 +16,9 @@ package com.facebook.presto.statistic;
 import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.HistoricalPlanStatistics;
 import com.facebook.presto.spi.statistics.HistoricalPlanStatisticsEntry;
+import com.facebook.presto.spi.statistics.JoinNodeStatistics;
 import com.facebook.presto.spi.statistics.PlanStatistics;
+import com.facebook.presto.spi.statistics.TableWriterNodeStatistics;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
@@ -25,16 +27,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static java.util.Collections.emptyList;
-import static org.testng.Assert.assertThrows;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.expectThrows;
 
 public class TestHistoricalStatisticsSerde
 {
     @Test
-    public void TestSimpleHistoricalStatisticsEncoderDecoder()
+    public void testSimpleHistoricalStatisticsEncoderDecoder()
     {
         HistoricalPlanStatistics samplePlanStatistics = new HistoricalPlanStatistics(ImmutableList.of(new HistoricalPlanStatisticsEntry(
-                new PlanStatistics(Estimate.of(100), Estimate.of(1000), 1, Estimate.unknown(), Estimate.unknown()),
-                ImmutableList.of(new PlanStatistics(Estimate.of(15000), Estimate.unknown(), 1, Estimate.unknown(), Estimate.unknown())))));
+                new PlanStatistics(Estimate.of(100), Estimate.of(1000), 1, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty()),
+                ImmutableList.of(new PlanStatistics(Estimate.of(15000), Estimate.unknown(), 1, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty())))));
         HistoricalStatisticsSerde historicalStatisticsEncoderDecoder = new HistoricalStatisticsSerde();
 
         // Test PlanHash
@@ -43,46 +47,46 @@ public class TestHistoricalStatisticsSerde
 
         // Test Plan Statistics
         ByteBuffer encodedValue = historicalStatisticsEncoderDecoder.encodeValue(samplePlanStatistics);
-        historicalStatisticsEncoderDecoder.decodeValue(encodedValue).equals(samplePlanStatistics);
+        assertEquals(historicalStatisticsEncoderDecoder.decodeValue(encodedValue), samplePlanStatistics);
     }
 
     @Test
-    public void TestHistoricalPlanStatisticsEntryList()
+    public void testHistoricalPlanStatisticsEntryList()
     {
         List<HistoricalPlanStatisticsEntry> historicalPlanStatisticsEntryList = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
-            historicalPlanStatisticsEntryList.add(new HistoricalPlanStatisticsEntry(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, Estimate.unknown(), Estimate.unknown()),
-                    ImmutableList.of(new PlanStatistics(Estimate.of(100), Estimate.of(i), 0, Estimate.unknown(), Estimate.unknown()))));
+            historicalPlanStatisticsEntryList.add(new HistoricalPlanStatisticsEntry(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty()),
+                    ImmutableList.of(new PlanStatistics(Estimate.of(100), Estimate.of(i), 0, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty()))));
         }
         HistoricalPlanStatistics samplePlanStatistics = new HistoricalPlanStatistics(historicalPlanStatisticsEntryList);
         HistoricalStatisticsSerde historicalStatisticsEncoderDecoder = new HistoricalStatisticsSerde();
 
         // Test Plan Statistics
         ByteBuffer encodedValue = historicalStatisticsEncoderDecoder.encodeValue(samplePlanStatistics);
-        assert (historicalStatisticsEncoderDecoder.decodeValue(encodedValue).equals(samplePlanStatistics)) : "Decoded value is different from original encoded value ";
+        assertEquals(historicalStatisticsEncoderDecoder.decodeValue(encodedValue), samplePlanStatistics, "Decoded value is different from original encoded value ");
     }
 
     @Test
-    public void TestHistoricalPlanStatisticsEmptyList()
+    public void testHistoricalPlanStatisticsEmptyList()
     {
         HistoricalPlanStatistics emptySamplePlanStatistics = new HistoricalPlanStatistics(emptyList());
         HistoricalStatisticsSerde historicalStatisticsEncoderDecoder = new HistoricalStatisticsSerde();
 
         // Test Plan Statistics
         ByteBuffer encodedValue = historicalStatisticsEncoderDecoder.encodeValue(emptySamplePlanStatistics);
-        assert (historicalStatisticsEncoderDecoder.decodeValue(encodedValue).equals(emptySamplePlanStatistics)) : "Decoded value is different from original encoded value ";
+        assertEquals(historicalStatisticsEncoderDecoder.decodeValue(encodedValue), emptySamplePlanStatistics, "Decoded value is different from original encoded value ");
     }
 
     @Test
-    public void TestPlanStatisticsList()
+    public void testPlanStatisticsList()
     {
         List<PlanStatistics> planStatisticsEntryList = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
-            planStatisticsEntryList.add(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, Estimate.unknown(), Estimate.unknown()));
+            planStatisticsEntryList.add(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty()));
         }
         List<HistoricalPlanStatisticsEntry> historicalPlanStatisticsEntryList = new ArrayList<>();
         for (int i = 0; i < 50; i++) {
-            historicalPlanStatisticsEntryList.add(new HistoricalPlanStatisticsEntry(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, Estimate.unknown(), Estimate.unknown()),
+            historicalPlanStatisticsEntryList.add(new HistoricalPlanStatisticsEntry(new PlanStatistics(Estimate.of(i * 5), Estimate.of(i * 5), 1, JoinNodeStatistics.empty(), TableWriterNodeStatistics.empty()),
                     planStatisticsEntryList));
         }
         HistoricalPlanStatistics samplePlanStatistics = new HistoricalPlanStatistics(historicalPlanStatisticsEntryList);
@@ -90,18 +94,19 @@ public class TestHistoricalStatisticsSerde
 
         // Test Plan Statistics
         ByteBuffer encodedValue = historicalStatisticsEncoderDecoder.encodeValue(samplePlanStatistics);
-        assert (historicalStatisticsEncoderDecoder.decodeValue(encodedValue).equals(samplePlanStatistics)) : "Decoded value is different from original encoded value ";
+        assertEquals(historicalStatisticsEncoderDecoder.decodeValue(encodedValue), samplePlanStatistics, "Decoded value is different from original encoded value ");
     }
 
     @Test
-    public void TestHistoricalStatisticsDecodeValueException()
+    public void testHistoricalStatisticsDecodeValueException()
     {
         HistoricalStatisticsSerde historicalStatisticsEncoderDecoder = new HistoricalStatisticsSerde();
 
         // Test PlanHash
         ByteBuffer encodedKey = historicalStatisticsEncoderDecoder.encodeKey("test");
-        assertThrows(
+        RuntimeException exception = expectThrows(
                 RuntimeException.class,
                 () -> historicalStatisticsEncoderDecoder.decodeValue(encodedKey));
+        assertTrue(exception.getMessage().contains("Invalid thrift object"));
     }
 }

@@ -51,6 +51,7 @@ import com.facebook.presto.operator.aggregation.ApproximateSetAggregation;
 import com.facebook.presto.operator.aggregation.AverageAggregations;
 import com.facebook.presto.operator.aggregation.BitwiseAndAggregation;
 import com.facebook.presto.operator.aggregation.BitwiseOrAggregation;
+import com.facebook.presto.operator.aggregation.BitwiseXorAggregation;
 import com.facebook.presto.operator.aggregation.BooleanAndAggregation;
 import com.facebook.presto.operator.aggregation.BooleanOrAggregation;
 import com.facebook.presto.operator.aggregation.CentralMomentsAggregation;
@@ -92,6 +93,7 @@ import com.facebook.presto.operator.aggregation.differentialentropy.Differential
 import com.facebook.presto.operator.aggregation.histogram.Histogram;
 import com.facebook.presto.operator.aggregation.multimapagg.AlternativeMultimapAggregationFunction;
 import com.facebook.presto.operator.aggregation.multimapagg.MultimapAggregationFunction;
+import com.facebook.presto.operator.aggregation.noisyaggregation.NoisyCountIfGaussianAggregation;
 import com.facebook.presto.operator.scalar.ArrayAllMatchFunction;
 import com.facebook.presto.operator.scalar.ArrayAnyMatchFunction;
 import com.facebook.presto.operator.scalar.ArrayCardinalityFunction;
@@ -181,6 +183,7 @@ import com.facebook.presto.operator.scalar.UrlFunctions;
 import com.facebook.presto.operator.scalar.VarbinaryFunctions;
 import com.facebook.presto.operator.scalar.WilsonInterval;
 import com.facebook.presto.operator.scalar.WordStemFunction;
+import com.facebook.presto.operator.scalar.queryplan.JsonPrestoQueryPlanFunctions;
 import com.facebook.presto.operator.scalar.sql.ArraySqlFunctions;
 import com.facebook.presto.operator.scalar.sql.MapNormalizeFunction;
 import com.facebook.presto.operator.scalar.sql.MapSqlFunctions;
@@ -344,6 +347,16 @@ import static com.facebook.presto.operator.aggregation.minmaxby.MaxByAggregation
 import static com.facebook.presto.operator.aggregation.minmaxby.MaxByNAggregationFunction.MAX_BY_N_AGGREGATION;
 import static com.facebook.presto.operator.aggregation.minmaxby.MinByAggregationFunction.MIN_BY;
 import static com.facebook.presto.operator.aggregation.minmaxby.MinByNAggregationFunction.MIN_BY_N_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyAverageGaussianAggregation.NOISY_AVERAGE_GAUSSIAN_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyAverageGaussianClippingAggregation.NOISY_AVERAGE_GAUSSIAN_CLIPPING_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyAverageGaussianClippingRandomSeedAggregation.NOISY_AVERAGE_GAUSSIAN_CLIPPING_RANDOM_SEED_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyAverageGaussianRandomSeedAggregation.NOISY_AVERAGE_GAUSSIAN_RANDOM_SEED_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyCountGaussianColumnAggregation.NOISY_COUNT_GAUSSIAN_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisyCountGaussianColumnRandomSeedAggregation.NOISY_COUNT_GAUSSIAN_RANDOM_SEED_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisySumGaussianAggregation.NOISY_SUM_GAUSSIAN_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisySumGaussianClippingAggregation.NOISY_SUM_GAUSSIAN_CLIPPING_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisySumGaussianClippingRandomSeedAggregation.NOISY_SUM_GAUSSIAN_CLIPPING_RANDOM_SEED_AGGREGATION;
+import static com.facebook.presto.operator.aggregation.noisyaggregation.NoisySumGaussianRandomSeedAggregation.NOISY_SUM_GAUSSIAN_RANDOM_SEED_AGGREGATION;
 import static com.facebook.presto.operator.scalar.ArrayConcatFunction.ARRAY_CONCAT_FUNCTION;
 import static com.facebook.presto.operator.scalar.ArrayConstructor.ARRAY_CONSTRUCTOR;
 import static com.facebook.presto.operator.scalar.ArrayFlattenFunction.ARRAY_FLATTEN_FUNCTION;
@@ -659,6 +672,14 @@ public class BuiltInTypeAndFunctionNamespaceManager
                 .aggregates(IntervalDayToSecondSumAggregation.class)
                 .aggregates(IntervalYearToMonthSumAggregation.class)
                 .aggregates(AverageAggregations.class)
+                .function(NOISY_SUM_GAUSSIAN_AGGREGATION)
+                .function(NOISY_SUM_GAUSSIAN_RANDOM_SEED_AGGREGATION)
+                .function(NOISY_SUM_GAUSSIAN_CLIPPING_AGGREGATION)
+                .function(NOISY_SUM_GAUSSIAN_CLIPPING_RANDOM_SEED_AGGREGATION)
+                .function(NOISY_AVERAGE_GAUSSIAN_AGGREGATION)
+                .function(NOISY_AVERAGE_GAUSSIAN_CLIPPING_AGGREGATION)
+                .function(NOISY_AVERAGE_GAUSSIAN_CLIPPING_RANDOM_SEED_AGGREGATION)
+                .function(NOISY_AVERAGE_GAUSSIAN_RANDOM_SEED_AGGREGATION)
                 .function(REAL_AVERAGE_AGGREGATION)
                 .aggregates(IntervalDayToSecondAverageAggregation.class)
                 .aggregates(IntervalYearToMonthAverageAggregation.class)
@@ -680,6 +701,7 @@ public class BuiltInTypeAndFunctionNamespaceManager
                 .aggregates(RealCorrelationAggregation.class)
                 .aggregates(BitwiseOrAggregation.class)
                 .aggregates(BitwiseAndAggregation.class)
+                .aggregates(BitwiseXorAggregation.class)
                 .aggregates(ClassificationMissRateAggregation.class)
                 .aggregates(ClassificationFallOutAggregation.class)
                 .aggregates(ClassificationPrecisionAggregation.class)
@@ -708,6 +730,7 @@ public class BuiltInTypeAndFunctionNamespaceManager
                 .scalars(BitwiseFunctions.class)
                 .scalars(DateTimeFunctions.class)
                 .scalars(JsonFunctions.class)
+                .scalars(JsonPrestoQueryPlanFunctions.class)
                 .scalars(ColorFunctions.class)
                 .scalars(ColorOperators.class)
                 .scalars(GeoFunctions.class)
@@ -874,6 +897,9 @@ public class BuiltInTypeAndFunctionNamespaceManager
                 .functions(MAX_BY, MIN_BY, MAX_BY_N_AGGREGATION, MIN_BY_N_AGGREGATION)
                 .functions(MAX_AGGREGATION, MIN_AGGREGATION, MAX_N_AGGREGATION, MIN_N_AGGREGATION)
                 .function(COUNT_COLUMN)
+                .function(NOISY_COUNT_GAUSSIAN_AGGREGATION)
+                .function(NOISY_COUNT_GAUSSIAN_RANDOM_SEED_AGGREGATION)
+                .aggregates(NoisyCountIfGaussianAggregation.class)
                 .functions(ROW_HASH_CODE, ROW_TO_JSON, JSON_TO_ROW, JSON_STRING_TO_ROW, ROW_DISTINCT_FROM, ROW_EQUAL, ROW_GREATER_THAN, ROW_GREATER_THAN_OR_EQUAL, ROW_LESS_THAN, ROW_LESS_THAN_OR_EQUAL, ROW_NOT_EQUAL, ROW_TO_ROW_CAST, ROW_INDETERMINATE)
                 .functions(VARCHAR_CONCAT, VARBINARY_CONCAT)
                 .function(DECIMAL_TO_DECIMAL_CAST)
@@ -1057,7 +1083,8 @@ public class BuiltInTypeAndFunctionNamespaceManager
                     signature.getKind(),
                     JAVA,
                     function.isDeterministic(),
-                    function.isCalledOnNullInput());
+                    function.isCalledOnNullInput(),
+                    function.getComplexTypeFunctionDescriptor());
         }
         else if (function instanceof SqlInvokedFunction) {
             SqlInvokedFunction sqlFunction = (SqlInvokedFunction) function;
@@ -1072,7 +1099,8 @@ public class BuiltInTypeAndFunctionNamespaceManager
                     SQL,
                     function.isDeterministic(),
                     function.isCalledOnNullInput(),
-                    sqlFunction.getVersion());
+                    sqlFunction.getVersion(),
+                    sqlFunction.getComplexTypeFunctionDescriptor());
         }
         else {
             return new FunctionMetadata(
@@ -1082,7 +1110,8 @@ public class BuiltInTypeAndFunctionNamespaceManager
                     signature.getKind(),
                     JAVA,
                     function.isDeterministic(),
-                    function.isCalledOnNullInput());
+                    function.isCalledOnNullInput(),
+                    function.getComplexTypeFunctionDescriptor());
         }
     }
 

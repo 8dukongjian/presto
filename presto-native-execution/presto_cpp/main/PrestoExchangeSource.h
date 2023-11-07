@@ -69,11 +69,12 @@ class PrestoExchangeSource : public velox::exec::ExchangeSource {
       int destination,
       std::shared_ptr<velox::exec::ExchangeQueue> queue,
       velox::memory::MemoryPool* pool,
-      const std::shared_ptr<folly::IOThreadPoolExecutor>& executor,
+      folly::CPUThreadPoolExecutor* driverExecutor,
+      folly::IOThreadPoolExecutor* httpExecutor,
       const std::string& clientCertAndKeyPath_ = "",
       const std::string& ciphers_ = "");
 
-  bool supportsFlowControl() const override {
+  bool supportsFlowControlV2() const override {
     return true;
   }
 
@@ -95,21 +96,43 @@ class PrestoExchangeSource : public velox::exec::ExchangeSource {
   /// This method should not be called concurrently. The caller must receive
   /// 'true' from shouldRequestLocked() before calling this method. The caller
   /// should not hold a lock over queue's mutex when making this call.
-  velox::ContinueFuture request(uint32_t maxBytes) override;
+  folly::SemiFuture<Response> request(
+      uint32_t maxBytes,
+      uint32_t maxWaitSeconds) override;
 
   static std::unique_ptr<ExchangeSource> create(
       const std::string& url,
       int destination,
       std::shared_ptr<velox::exec::ExchangeQueue> queue,
       velox::memory::MemoryPool* pool,
-      std::shared_ptr<folly::IOThreadPoolExecutor> executor);
+      folly::CPUThreadPoolExecutor* cpuExecutor,
+      folly::IOThreadPoolExecutor* ioExecutor);
 
   /// Completes the future returned by 'request()' if it hasn't completed
   /// already.
   void close() override;
 
   folly::F14FastMap<std::string, int64_t> stats() const override {
-    return {{"prestoExchangeSource.numPages", numPages_}};
+    return {
+        {"prestoExchangeSource.numPages", numPages_},
+        {"prestoExchangeSource.totalBytes", totalBytes_},
+    };
+  }
+
+  std::string toJsonString() override {
+    folly::dynamic obj = folly::dynamic::object;
+    obj["taskId"] = taskId_;
+    obj["destination"] = destination_;
+    obj["sequence"] = sequence_;
+    obj["requestPending"] = requestPending_.load();
+    obj["basePath"] = basePath_;
+    obj["host"] = host_;
+    obj["numPages"] = numPages_;
+    obj["totalBytes"] = totalBytes_;
+    obj["closed"] = std::to_string(closed_);
+    obj["abortResultsIssued"] = std::to_string(abortResultsIssued_);
+    obj["atEnd"] = atEnd_;
+    return folly::toPrettyJson(obj);
   }
 
   int testingFailedAttempts() const {
@@ -135,7 +158,7 @@ class PrestoExchangeSource : public velox::exec::ExchangeSource {
   static void testingClearMemoryUsage();
 
  private:
-  void doRequest(int64_t delayMs, uint32_t maxBytes);
+  void doRequest(int64_t delayMs, uint32_t maxBytes, uint32_t maxWaitSeconds);
 
   /// Handles successful, possibly empty, response. Adds received data to the
   /// queue. If received an end marker, notifies the queue by adding null page.
@@ -155,12 +178,17 @@ class PrestoExchangeSource : public velox::exec::ExchangeSource {
   void processDataError(
       const std::string& path,
       uint32_t maxBytes,
+      uint32_t maxWaitSeconds,
       const std::string& error,
       bool retry = true);
 
   void acknowledgeResults(int64_t ackSequence);
 
   void abortResults();
+
+  /// Send abort results after specified delay. This function is called
+  /// multiple times by abortResults for retries.
+  void doAbortResults(int64_t delayMs);
 
   /// Completes the future returned from 'request()' if it hasn't completed
   /// already.
@@ -187,17 +215,22 @@ class PrestoExchangeSource : public velox::exec::ExchangeSource {
   const uint16_t port_;
   const std::string clientCertAndKeyPath_;
   const std::string ciphers_;
-  const std::shared_ptr<folly::IOThreadPoolExecutor> exchangeExecutor_;
+  const bool immediateBufferTransfer_;
+
+  folly::CPUThreadPoolExecutor* const driverExecutor_;
+  folly::IOThreadPoolExecutor* const httpExecutor_;
 
   std::shared_ptr<http::HttpClient> httpClient_;
-  RetryState retryState_;
+  RetryState dataRequestRetryState_;
+  RetryState abortRetryState_;
   int failedAttempts_;
   // The number of pages received from this presto exchange source.
   uint64_t numPages_{0};
+  uint64_t totalBytes_{0};
   std::atomic_bool closed_{false};
-  // A boolean indicating whether abortResults() call was issued and was
-  // successfully processed by the remote server.
-  std::atomic_bool abortResultsSucceeded_{false};
-  velox::ContinuePromise promise_{velox::ContinuePromise::makeEmpty()};
+  // A boolean indicating whether abortResults() call was issued
+  std::atomic_bool abortResultsIssued_{false};
+  velox::VeloxPromise<Response> promise_{
+      velox::VeloxPromise<Response>::makeEmpty()};
 };
 } // namespace facebook::presto

@@ -67,9 +67,11 @@ General Aggregate Functions
 
     This is an alias for :func:`bool_and`.
 
-.. function:: geometric_mean(x) -> double
+.. function:: geometric_mean(bigint) -> double
+              geometric_mean(double) -> double
+              geometric_mean(real) -> real
 
-    Returns the geometric mean of all input values.
+    Returns the `geometric mean <https://en.wikipedia.org/wiki/Geometric_mean>`_ of all input values.
 
 .. function:: max_by(x, y) -> [same as x]
 
@@ -111,7 +113,29 @@ General Aggregate Functions
     for each input value. In addition to taking the input value, ``inputFunction``
     takes the current state, initially ``initialState``, and returns the new state.
     ``combineFunction`` will be invoked to combine two states into a new state.
-    The final state is returned::
+    The final state is returned. Throws an error if ``initialState`` is NULL.
+    The behavior is undefined if ``inputFunction`` or ``combineFunction`` return a NULL.
+
+    Take care when designing ``initialState``, ``inputFunction`` and ``combineFunction``.
+    These must support evaluating aggregation in a distributed manner using partial
+    aggregation on many nodes, followed by shuffle over group-by keys, followed by
+    final aggregation. Consider all possible values of state to ensure that
+    ``combineFunction`` is `commutative <https://en.wikipedia.org/wiki/Commutative_property>`_
+    and `associative <https://en.wikipedia.org/wiki/Associative_property>`_
+    operation with ``initialState`` as the
+    `identity <https://en.wikipedia.org/wiki/Identity_element>`_ value.
+
+     combineFunction(s, initialState) = s for any s
+
+     combineFunction(s1, s2) = combineFunction(s2, s1) for any s1 and s2
+
+     combineFunction(s1, combineFunction(s2, s3)) = combineFunction(combineFunction(s1, s2), s3) for any s1, s2, s3
+
+    In addition, make sure that the following holds for the inputFunction:
+
+     inputFunction(inputFunction(initialState, x), y) = combineFunction(inputFunction(initialState, x), inputFunction(initialState, y)) for any x and y
+
+    ::
 
         SELECT id, reduce_agg(value, 0, (a, b) -> a + b, (a, b) -> a + b)
         FROM (
@@ -145,11 +169,16 @@ General Aggregate Functions
 
 .. function:: set_agg(x) -> array<[same as input]>
 
-        Returns an array created from the distinct input ``x`` elements.
+    Returns an array created from the distinct input ``x`` elements.
+
+    If the input includes ``NULL``, ``NULL`` will be included in the returned array.
 
 .. function:: set_union(array(T)) -> array(T)
 
-    Returns an array of all the distinct values contained in each array of the input
+    Returns an array of all the distinct values contained in each array of the input.
+
+    When all inputs are ``NULL``, this function returns an empty array. If ``NULL`` is
+    an element of one of the input arrays, ``NULL`` will be included in the returned array.
 
     Example::
 
@@ -176,6 +205,10 @@ Bitwise Aggregate Functions
 .. function:: bitwise_or_agg(x) -> bigint
 
     Returns the bitwise OR of all input values in 2's complement representation.
+
+.. function:: bitwise_xor_agg(x) -> bigint
+
+    Returns the bitwise XOR of all input values in 2's complement representation.
 
 Map Aggregate Functions
 -----------------------
@@ -332,6 +365,176 @@ Approximate Aggregate Functions
     for all ``value``\ s. This function is equivalent to the variant of
     :func:`numeric_histogram` that takes a ``weight``, with a per-item weight of ``1``.
     In this case, the total weight in the returned map is the count of items in the bin.
+
+.. function:: noisy_count_gaussian(x, noise_scale) -> bigint
+
+    Counts the non-null values and then adds a random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale`` to the true count.
+    The noisy count is post-processed to be non-negative and rounded to bigint.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_count_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_count_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_count_gaussian(x, noise_scale, random_seed) -> bigint
+
+    Counts the non-null values and then adds a random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale`` to the true count.
+    The noisy count is post-processed to be non-negative and rounded to bigint.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_count_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_count_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
+
+.. function:: noisy_count_if_gaussian(x, noise_scale) -> bigint
+
+    Counts the `TRUE` values and then adds a random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale`` to the true count.
+    The noisy count is post-processed to be non-negative and rounded to bigint.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_count_if_gaussian(orderkey > 10, 20.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_count_if_gaussian(orderkey > 10, 20.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_count_if_gaussian(x, noise_scale, random_seed) -> bigint
+
+    Counts the `TRUE` values and then adds a random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale`` to the true count.
+    The noisy count is post-processed to be non-negative and rounded to bigint.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_count_if_gaussian(orderkey > 10, 20.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_count_if_gaussian(orderkey > 10, 20.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
+
+.. function:: noisy_sum_gaussian(x, noise_scale) -> double
+
+    Calculates the sum over the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the sum, and the return type is double.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_sum_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_sum_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_sum_gaussian(x, noise_scale, random_seed) -> double
+
+    Calculates the sum over the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the sum, and the return type is double.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
+
+.. function:: noisy_sum_gaussian(x, noise_scale, lower, upper) -> double
+
+    Calculates the sum over the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the sum, and the return type is double.
+
+    Each value is clipped to the range of ``[lower, upper]`` before adding to the sum.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 10.0, 50.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 10.0, 51.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_sum_gaussian(x, noise_scale, lower, upper, random_seed) -> double
+
+    Calculates the sum over the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the sum, and the return type is double.
+
+    Each value is clipped to the range of ``[lower, upper]`` before adding to the sum.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 10.0, 50.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_sum_gaussian(orderkey, 20.0, 10.0, 50.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
+
+.. function:: noisy_avg_gaussian(x, noise_scale) -> double
+
+    Calculates the average (arithmetic mean) of all the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the avg, and the return type is double.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_avg_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_avg_gaussian(orderkey, 20.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_avg_gaussian(x, noise_scale, random_seed) -> double
+
+    Calculates the average (arithmetic mean) of all the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the avg, and the return type is double.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
+
+.. function:: noisy_avg_gaussian(x, noise_scale, lower, upper) -> double
+
+    Calculates the average (arithmetic mean) of all the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the avg, and the return type is double.
+
+    Each value is clipped to the range of ``[lower, upper]`` before adding to the avg.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Noise is from a secure random. ::
+
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 10.0, 50.0) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 10.0, 51.0) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; -- (0 row)
+
+.. function:: noisy_avg_gaussian(x, noise_scale, lower, upper, random_seed) -> double
+
+    Calculates the average (arithmetic mean) of all the input values and then adds random Gaussian noise
+    with 0 mean and standard deviation of ``noise_scale``.
+    All values are converted to double before being added to the avg, and the return type is double.
+
+    Each value is clipped to the range of ``[lower, upper]`` before adding to the avg.
+
+    When there are no input rows, this function returns ``NULL``.
+
+    Random seed is used to seed the random generator.
+    This method does not use a secure random. ::
+
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 10.0, 50.0, 321) FROM tpch.tiny.lineitem WHERE false; -- NULL (1 row)
+        SELECT noisy_avg_gaussian(orderkey, 20.0, 10.0, 50.0, 321) FROM tpch.tiny.lineitem WHERE false  GROUP BY orderkey; --  (0 row)
 
 
 Statistical Aggregate Functions
